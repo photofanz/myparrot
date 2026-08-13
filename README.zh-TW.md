@@ -73,6 +73,13 @@ open ~/Applications/MyParrot.app
 
 檔案地圖見 [英文版 README](README.md#architecture);測試金字塔與驗證方式見 [docs/TESTING.md](docs/TESTING.md)。
 
+## 作者
+
+大叔（Eric Lu）——30 年產品人，產品顧問・獵頭・職涯教練。每週好幾場線上面談，受不了裝 bot 進會議的彆扭，就自己寫了這支。
+
+- 長文正本：[uncleric.com](https://www.uncleric.com)
+- 日常出沒：[Threads @tingyulu](https://www.threads.com/@tingyulu)｜[LinkedIn](https://www.linkedin.com/in/uncleeric/)
+
 ## License
 
 MIT © 2026 Eric Lu — 見 [LICENSE](LICENSE)。

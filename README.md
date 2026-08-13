@@ -90,12 +90,12 @@ scripts/build-app.sh         Assemble + sign + install + build stamp
 
 See [docs/TESTING.md](docs/TESTING.md) for the test pyramid and how to verify changes.
 
-## 作者
+## Author
 
-大叔（Eric Lu）——30 年產品人，產品顧問・獵頭・職涯教練。每週好幾場線上面談，受不了裝 bot 進會議的彆扭，就自己寫了這支。
+Eric Lu ("Uncle Eric") — 30 years in product, now a product consultant, headhunter, and career coach. Several online interviews a week, and inviting a bot into the call always felt wrong — so I built this instead.
 
-- 長文正本：[uncleric.com](https://www.uncleric.com)
-- 日常出沒：[Threads @tingyulu](https://www.threads.com/@tingyulu)｜[LinkedIn](https://www.linkedin.com/in/uncleeric/)
+- Long-form writing: [uncleric.com](https://www.uncleric.com) (zh-TW)
+- Find me: [Threads @tingyulu](https://www.threads.com/@tingyulu) | [LinkedIn](https://www.linkedin.com/in/uncleeric/)
 
 ## License
 
