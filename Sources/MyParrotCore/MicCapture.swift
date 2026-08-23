@@ -33,6 +33,11 @@ final class MicCapture: @unchecked Sendable {
     /// configuration-change self-heal can re-pin the same device (AUD-27 / BUG-18).
     private var deviceID: AudioDeviceID?
     private var configObserver: NSObjectProtocol?
+    /// De-dupes + defers the config-change rebuild (2026-08-10 CLI 死鎖修復,見
+    /// `rebuildAfterConfigurationChange()` 的完整說明)。main-confined,同 class
+    /// 其餘引擎控制狀態一樣不需要鎖——`@unchecked Sendable` 的既有理由(class 頂
+    /// 端註解)已涵蓋:所有讀寫都在 main thread。
+    private var rebuildScheduled = false
 
     /// Optional specific input device; nil = system default input.
     func start(deviceID: AudioDeviceID? = nil) throws {
@@ -91,14 +96,45 @@ final class MicCapture: @unchecked Sendable {
         }
     }
 
+    /// ① 為什麼要跳出 callout + 延遲 + 去重(2026-08-10 CLI 死鎖實測,取代原本
+    /// 「同步重建」版本):上面那段註解說「deliver on .main 可避免 Apple 文件警告
+    /// 的死鎖」——這在 GUI app 兩個月的正常使用下成立,但在**引擎剛啟動的瞬間**
+    /// 破功:CLI 版 `myparrot record` 真 Terminal 100% 重現過,`sample` stack 顯示
+    /// main thread 卡在這裡呼叫的 `buildAndStart()`→`AVAudioEngine.start()`→
+    /// CoreAudio `HALC_ProxyIOContext::_StartIO`→`HALB_IOThread::_WaitForState`,
+    /// 對一個 pthread mutex 永久等待。根因:`AVAudioEngineConfigurationChange`
+    /// 有時在 `engine.start()` 都還沒完全回傳、HAL 內部狀態機還在轉換時就送達
+    /// (`.main` queue 只保證跳出 Apple 私有 dispatch queue,不保證 HAL 已經穩定),
+    /// 通知 callout 內同步呼叫 `engine.stop()`+`engine.start()` 這種「重入 HAL
+    /// StartIO」的動作,就撞上這個 mutex。改成 `asyncAfter` 完全跳出這次通知的
+    /// callout(不在它的呼叫堆疊上做任何引擎操作),讓 run loop 先回轉一輪。
+    ///
+    /// ② BUG-18/AUD-27 語意保留:裝置變更後**還是**在 0.3 秒內自動重建、自動
+    /// 重新掛回同一顆(`deviceID` 記住的)裝置,使用者感受不到差異——只是把
+    /// 「立刻同步重建」改成「跳出通知堆疊,0.3 秒後在乾淨的 main run loop 迭代
+    /// 重建」。0.3 秒遠低於 `RecordingController` AUD-28 看門狗對「你軌無訊號」
+    /// 的容忍窗(3 秒),不會被看門狗誤判成另一次故障、觸發不必要的二次重試。
+    ///
+    /// ③ 為什麼是 0.3 秒 + 去重(`rebuildScheduled`):給 HAL 一點時間讓上一輪
+    /// 裝置轉換真正完成(而不是在它還沒穩定時就再戳一次 `engine.start()`,重蹈
+    /// 同一個死鎖);同時裝置切換常常在極短時間內連續送出好幾個
+    /// `AVAudioEngineConfigurationChange`(一次路由變更可能觸發格式變更+裝置
+    /// 變更兩則通知),`rebuildScheduled` 確保這些通知合併成同一次重建,不會
+    /// 排出好幾個互相打架的 `asyncAfter` 重建。
     private func rebuildAfterConfigurationChange() {
-        guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        tapInstalled = false
-        engine.stop()
-        // If the new format isn't ready yet (0 Hz) this throws; we keep `isRunning` true
-        // and let the controller's liveness watchdog (AUD-28) retry / fall back.
-        try? buildAndStart()
+        guard isRunning, !rebuildScheduled else { return }
+        rebuildScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            self.rebuildScheduled = false
+            guard self.isRunning else { return }
+            self.engine.inputNode.removeTap(onBus: 0)
+            self.tapInstalled = false
+            self.engine.stop()
+            // If the new format isn't ready yet (0 Hz) this throws; we keep `isRunning` true
+            // and let the controller's liveness watchdog (AUD-28) retry / fall back.
+            try? self.buildAndStart()
+        }
     }
 
     func stop() {

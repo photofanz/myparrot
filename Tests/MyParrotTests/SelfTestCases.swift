@@ -30,4 +30,11 @@ struct SelfTestCases {
     @Test("AEC 無回音 gate(戴耳機略過)") func aecNoEchoGate()   { check(SelfTest.aecNoEchoGate()) }
     @Test("BUG-24 對方軌流動但全零看門狗") func sysSilenceWatchdog() { check(SelfTest.sysSilenceWatchdog()) }
     @Test("BUG-25 藍牙漏拍缺口補靜音") func btGapFill() { check(SelfTest.btGapFill()) }
+    @Test("UPD-01 版號解析/比較(v 前綴/補 0/非數字段)") func updateVersionCompare() { check(SelfTest.caseUpdateVersionCompare()) }
+    @Test("UPD-02 GitHubRelease decode(容忍未知欄位)") func updateReleaseDecode() { check(SelfTest.caseUpdateReleaseDecode()) }
+    @Test("UPD-03 略過此版邏輯") func updateSkipLogic() { check(SelfTest.caseUpdateSkipLogic()) }
+    @Test("UI-28b 波形桶分析(分段讀/正規化/downsample)") func waveformBuckets() { check(SelfTest.waveformBuckets()) }
+    @Test("UI-28c 波形快取落檔(round-trip/失效/損毀)") func waveformCache() { check(SelfTest.waveformCacheRoundTrip()) }
+    @Test("REC-02b 同分鐘同標題防覆蓋(後綴 2/3)") func uniqueFileName() { check(SelfTest.uniqueFileNameProbe()) }
+    @Test("UI-29 電平表 dB 刻度(−50…−12 dBFS,三處同刻度)") func meterScale() { check(SelfTest.meterScaleMapping()) }
 }

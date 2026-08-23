@@ -5,13 +5,16 @@ import MyParrotCore
 /// UI-16:build-app.sh 簽章前把 MPBuildStamp(MMdd-HHmm git短hash[*])蓋進
 /// Info.plist;`swift run` 無 stamp → "build dev"。
 /// UI-22:自 RootView 的 adBar 移來——主畫面淨空,設定頁底部留個小字驗版本用。
-private let buildStamp =
+// 2026-08-23 Eric:footer 要回來顯示 build no(UI-22 搬走後他還是要看),改 internal 供 RootView 共用。
+let buildStamp =
     (Bundle.main.infoDictionary?["MPBuildStamp"] as? String).map { "build \($0)" } ?? "build dev"
 
 struct SettingsView: View {
     @Bindable var controller: RecordingController
+    @Bindable var updates: UpdateChecker
     @Bindable private var loc = Localizer.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var escMonitor: Any?
 
     // Whisper 模型管理(TR-16)
     @State private var modelProgress: [String: Double] = [:]
@@ -27,6 +30,7 @@ struct SettingsView: View {
                 Text(L("設定")).font(.title3.weight(.semibold))
                 Spacer()
                 Button(L("完成")) { dismiss() }.keyboardShortcut(.defaultAction)
+
             }.padding(MP.spL)
             Divider()
 
@@ -65,7 +69,8 @@ struct SettingsView: View {
                                 ZStack(alignment: .leading) {
                                     RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.10))
                                     RoundedRectangle(cornerRadius: 3).fill(MP.blue)
-                                        .frame(width: max(2, geo.size.width * CGFloat(min(1, controller.meterLevel))))
+                                        // 2026-08-23:與主畫面/播放列同一套 dB 刻度(MeterScale)。
+                                        .frame(width: max(2, geo.size.width * CGFloat(MeterScale.fraction(controller.meterLevel))))
                                 }
                             }.frame(height: 8)
                             Text(controller.meterActive ? L(controller.state == .recording ? "錄音中收音" : "對著麥克風講話測試") : "")
@@ -87,10 +92,13 @@ struct SettingsView: View {
                     }
                     Text(L("預設跟隨系統語言;不支援的語言會用英文。支援:英/繁中/日/韓/簡中。"))
                         .font(MPFont.caption).foregroundStyle(.tertiary).lineSpacing(3)
+                    // 2026-08-23 Eric:雲端(自帶 API)尚未實作,選單先藏(enum 保留給 Core/CLI 相容;舊設定值 .cloud 由 Core 回退原生)。
                     Picker(L("引擎"), selection: $controller.engine) {
-                        ForEach(TranscriptionEngine.allCases) { e in Text(e.label).tag(e) }
+                        ForEach(TranscriptionEngine.allCases.filter { $0 != .cloud }) { e in Text(e.label).tag(e) }
                     }
-                    if controller.engine == .whisperKit { whisperModelRows }
+                    // 2026-08-23 Eric:模型管理原本只在引擎=Whisper 時顯示,但「結束後自動高精度」也吃 Whisper 模型
+                    // → 引擎=原生時使用者找不到下載入口。兩者任一開啟就顯示。
+                    if controller.engine == .whisperKit || controller.autoTranscribeAfterStop { whisperModelRows }
                     VStack(alignment: .leading, spacing: MP.spXS) {
                         Toggle(L("結束後自動產出高精度逐字稿"), isOn: $controller.autoTranscribeAfterStop)
                         Text(L("錄音停止後用 Whisper 高精度重轉一次;即時稿僅供會中參考。"))
@@ -114,6 +122,16 @@ struct SettingsView: View {
                     LabeledContent(L("語音辨識")) { statusDot(controller.speechPermission) }
                     Button(L("重新請求權限")) { Task { await controller.requestPermissions() } }
                 } header: { Text(L("權限")) }
+
+                // UPD:目前版本+自動檢查開關+立即檢查+結果字串。
+                Section {
+                    LabeledContent(L("目前版本")) { Text(UpdateChecker.currentVersion ?? "dev").foregroundStyle(.secondary) }
+                    Toggle(L("啟動時自動檢查更新"), isOn: $updates.enabled)
+                    HStack {
+                        Button(L("立即檢查")) { Task { await updates.checkNow() } }
+                        updateStatusText
+                    }
+                } header: { Text(L("軟體更新")) }
             }
             .formStyle(.grouped)
             // UI-22 item 9: build stamp 自 adBar 搬到這裡——設定頁底部小字,主畫面淨空。
@@ -123,6 +141,16 @@ struct SettingsView: View {
                 .padding(.horizontal, MP.spL).padding(.vertical, MP.spS)
         }
         .frame(width: 480, height: 640)
+        // UI-24: Esc 關閉(Return 已用 .keyboardShortcut(.defaultAction) 掛在「完成」)。
+        // 2026-08-23 真機驗:.onExitCommand 與隱藏 .cancelAction 鈕在 sheet 內都接不到 Esc
+        // (焦點留在主視窗輸入框)→ 改掛 NSEvent 本地監聽,sheet 存在期間 keyCode 53 即 dismiss。
+        .onAppear {
+            escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 53 else { return event }
+                dismiss(); return nil
+            }
+        }
+        .onDisappear { if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil } }
         .onAppear { controller.startMicMonitor() }
         .onDisappear { controller.stopMicMonitor() }
     }
@@ -213,6 +241,30 @@ struct SettingsView: View {
         HStack(spacing: MP.spS) {
             Circle().fill(ok ? Color.green : Color.orange).frame(width: 8, height: 8)
             Text(L(ok ? "已授權" : "未授權")).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - UPD 軟體更新
+
+    @ViewBuilder
+    private var updateStatusText: some View {
+        switch updates.status {
+        case .idle:
+            EmptyView()
+        case .checking:
+            HStack(spacing: MP.spXS) {
+                ProgressView().controlSize(.small)
+                Text(L("檢查中…")).font(MPFont.caption).foregroundStyle(.secondary)
+            }
+        case .upToDate:
+            Text(L("已是最新版本")).font(MPFont.caption).foregroundStyle(.secondary)
+        case .updateAvailable(let ver, let url):
+            HStack(spacing: MP.spXS) {
+                Text(L("有新版本") + " v\(ver)").font(MPFont.caption).foregroundStyle(.secondary)
+                Button(L("前往下載")) { NSWorkspace.shared.open(url) }.controlSize(.small)
+            }
+        case .failed:
+            Text(L("檢查失敗")).font(MPFont.caption).foregroundStyle(.red)
         }
     }
 }

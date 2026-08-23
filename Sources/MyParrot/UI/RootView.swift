@@ -23,13 +23,14 @@ extension View {
 
 struct RootView: View {
     @Bindable var controller: RecordingController
-    @Binding var miniMode: Bool
+    @Bindable var updates: UpdateChecker
+    // UI-24: 設定 sheet／逐字稿範圍／列表收折搬進共用的 AppUIState——選單命令
+    // (在 view 樹外)才能驅動這些狀態,見 MyParrotApp.AppUIState。
+    @Bindable var uiState: AppUIState
+    let windowMode: WindowModeManager
     @State private var loc = Localizer.shared
-    @State private var fullTranscript = false
-    @State private var showSettings = false
-    /// UI-20: 最近錄音列表可收折省空間。@State(非 @AppStorage)=只在本次
-    /// 執行內記住,嚴守「不加沒要求的功能」;預設展開維持原行為。
-    @State private var listExpanded = true
+    // UPD:〔×〕=本次啟動不再顯示(不持久化,重啟再現)。
+    @State private var updateBannerDismissed = false
     /// UI-22:錄音中狀態紅點呼吸動畫的驅動值(見 statusCard)。
     @State private var recDotBreathe = false
     /// UI-22:會議名稱欄位改 .plain 樣式後,focus 時邊框變 MP.blue 需要自己追蹤。
@@ -48,8 +49,8 @@ struct RootView: View {
                     transcriptSection
                         .frame(minHeight: 140, maxHeight: .infinity)
                     recordingsSection
-                        .frame(minHeight: listExpanded ? 88 : 30,
-                               maxHeight: listExpanded ? .infinity : 30)
+                        .frame(minHeight: uiState.listExpanded ? 88 : 30,
+                               maxHeight: uiState.listExpanded ? .infinity : 30)
                 }
             }
             .padding(MP.spL)
@@ -63,7 +64,7 @@ struct RootView: View {
         // 自帶——雙重約束取大者曾讓本層的值被 App 層舊 720 蓋掉。
         // UI-21: 移除 macOS 工具列——迷你/設定兩鈕改放 statusCard 首列右側(內容區,
         // 保證顯示、靠右、320pt 窄視窗不會被收進「»」)。原生標題列置中顯示視窗名。
-        .sheet(isPresented: $showSettings) { SettingsView(controller: controller) }
+        .sheet(isPresented: $uiState.showSettings) { SettingsView(controller: controller, updates: updates) }
         .task { await controller.requestPermissions() }
     }
 
@@ -84,34 +85,88 @@ struct RootView: View {
             if !controller.micPermission || !controller.speechPermission {
                 permissionNotice
             }
+            // UPD:非阻斷更新提示——僅 idle 時顯示(錄音/暫停中不打擾,開會場景)。
+            if case .updateAvailable(let ver, let url) = updates.status,
+               controller.state == .idle, !updateBannerDismissed {
+                HStack(spacing: MP.spS) {
+                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(MP.blue)
+                    Text(L("有新版本") + " v\(ver)").font(MPFont.caption)
+                    Spacer()
+                    Button(L("前往下載")) { NSWorkspace.shared.open(url) }.controlSize(.small)
+                    Button(L("略過此版")) { updates.skip() }.controlSize(.small)
+                    Button { updateBannerDismissed = true } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                }
+                .mpBanner(color: MP.blue)
+            }
             ControlBar(controller: controller)
         }
     }
 
+    /// 首列左半:狀態點 + 狀態字 + 計時器。
+    private var statusLead: some View {
+        HStack(spacing: MP.spS) {
+            Circle().fill(controller.state == .recording ? MP.recRed : Color.secondary)
+                .frame(width: 9, height: 9)
+                // UI-22: 錄音中呼吸(opacity 0.5↔1.0);非錄音靜止(固定不透明)。
+                .opacity(controller.state == .recording ? (recDotBreathe ? 1.0 : 0.5) : 1.0)
+                .onAppear { updateRecDotBreathing() }
+                .onChange(of: controller.state) { _, _ in updateRecDotBreathing() }
+            Text(L(stateLabel)).font(MPFont.label)
+                .foregroundStyle(controller.state == .recording ? MP.recRed : .secondary)
+            Text(MP.clock(controller.elapsed))
+                .font(MPFont.display)
+                .lineLimit(1).fixedSize()   // UI-22: 320pt 首列擠時計時器絕不折行
+        }
+    }
+
+    /// 首列右半:模式切換鈕 + 設定鈕,各自「icon + ⌘ 膠囊」框在同一顆常駐邊框內。
+    private var headerButtons: some View {
+        HStack(spacing: MP.spS) {
+            // UI-21: 模式/設定鈕(自 macOS 工具列搬來)——放這張卡首列右側,靠右、
+            // 窄視窗不收合。
+            // UI-25: 迷你模式鈕改成三態模式切換鈕——icon 依目前模式變、內嵌
+            // ⌘1 膠囊,點擊＝與按 ⌘1 相同的 cycle() 動作(不是直接跳迷你)。
+            Button { windowMode.cycle() } label: {
+                HStack(spacing: 3) {
+                    // UI-22: 14pt 是圖示視覺尺寸(非文字級距),刻意不收進 MPFont。
+                    Image(systemName: windowMode.mode.icon).font(.system(size: 14))
+                    ShortcutBadge(symbol: "⌘1")
+                }
+            }
+            .buttonStyle(.bordered)
+            .mpShortcut("1")
+            .help("\(L("切換模式")):\(L("標準視窗")) → \(L("窄版視窗")) → \(L("迷你控制列")) ⌘1")
+            .accessibilityLabel(L("切換模式"))
+            Button { uiState.showSettings = true } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "gearshape").font(.system(size: 14))
+                    ShortcutBadge(symbol: "⌘,")
+                }
+            }
+            .buttonStyle(.bordered)
+            .help("\(L("設定")) ⌘,")
+            .accessibilityLabel(L("設定"))
+        }
+        .fixedSize()   // 膠囊絕不被擠成「⁝」(2026-08-23 窄版截圖)
+    }
+
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: MP.spS) {
-            HStack(spacing: MP.spS) {
-                Circle().fill(controller.state == .recording ? MP.recRed : Color.secondary)
-                    .frame(width: 9, height: 9)
-                    // UI-22: 錄音中呼吸(opacity 0.5↔1.0);非錄音靜止(固定不透明)。
-                    .opacity(controller.state == .recording ? (recDotBreathe ? 1.0 : 0.5) : 1.0)
-                    .onAppear { updateRecDotBreathing() }
-                    .onChange(of: controller.state) { _, _ in updateRecDotBreathing() }
-                Text(L(stateLabel)).font(MPFont.label)
-                    .foregroundStyle(controller.state == .recording ? MP.recRed : .secondary)
-                Text(MP.clock(controller.elapsed))
-                    .font(MPFont.display)
-                    .lineLimit(1).fixedSize()   // UI-22: 320pt 首列擠時計時器絕不折行
-                Spacer(minLength: MP.spXS)
-                // UI-21: 迷你/設定鈕(自 macOS 工具列搬來)——放這張卡首列右側,靠右、
-                // 窄視窗不收合。狀態文字/計時在左,兩鈕在右,一列到底。
-                Button { miniMode = true } label: {
-                    // UI-22: 14pt 是圖示視覺尺寸(非文字級距),刻意不收進 MPFont。
-                    Image(systemName: "pip").font(.system(size: 14))
-                }.buttonStyle(.accessoryBar).help(L("迷你模式"))
-                Button { showSettings = true } label: {
-                    Image(systemName: "gearshape").font(.system(size: 14))
-                }.buttonStyle(.accessoryBar).help(L("設定"))
+            // UI-24 修正(Eric 2026-08-23 15:06 截圖):模式/設定兩鈕原用 .accessoryBar
+            // (hover 才浮邊框)→ 圖示與 ⌘ 膠囊看起來沒框在一起;改 .bordered 常駐
+            // 邊框,齒輪也嵌 ⌘, 膠囊(推翻 v3「齒輪只用 tooltip」)。窄版 320pt 一列
+            // 放不下(計時器 88pt+兩顆含膠囊鈕 ~120pt)→ ViewThatFits 退成兩列:
+            // 第二列兩鈕靠右,膠囊照印、不縮不裁。
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: MP.spS) {
+                    statusLead
+                    Spacer(minLength: MP.spXS)
+                    headerButtons
+                }
+                VStack(alignment: .leading, spacing: MP.spXS) {
+                    HStack(spacing: MP.spS) { statusLead; Spacer(minLength: 0) }
+                    HStack(spacing: MP.spS) { Spacer(minLength: 0); headerButtons }
+                }
             }
             LevelBar(label: L("對方"), value: controller.otherLevel, color: MP.coral,
                      recording: controller.state == .recording, hasSignal: controller.sysHasSignal)
@@ -190,23 +245,39 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .allowsHitTesting(false)
             HStack {
-                Button { withAnimation(.easeOut(duration: 0.15)) { listExpanded.toggle() } } label: {
+                // v3 定稿:「最近錄音 ⌘K」整顆是可點 chip,膠囊在同一個 Button 邊框內。
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { uiState.listExpanded.toggle() }
+                } label: {
                     HStack(spacing: MP.spXS) {
                         Image(systemName: "chevron.right")
                             .font(MPFont.caption.weight(.semibold))
-                            .rotationEffect(.degrees(listExpanded ? 90 : 0))
+                            .rotationEffect(.degrees(uiState.listExpanded ? 90 : 0))
                         Text(L("最近錄音")).font(MPFont.label)
+                        ShortcutBadge(symbol: "⌘K")
                     }.foregroundStyle(.secondary)
-                }.buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
+                .mpShortcut("k")
+                .help("\(L(uiState.listExpanded ? "收折最近錄音" : "展開最近錄音")) ⌘K")
+                .accessibilityLabel(L(uiState.listExpanded ? "收折最近錄音" : "展開最近錄音"))
                 Spacer()
+                // 「在 Finder 打開」chip 同款——膠囊在同一顆按鈕邊框內。
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([controller.recordingsDir])
                 } label: {
-                    Label(L("在 Finder 打開"), systemImage: "folder").font(MPFont.caption)
-                }.buttonStyle(.borderless)
+                    HStack(spacing: MP.spXS) {
+                        Label(L("在 Finder 打開"), systemImage: "folder").font(MPFont.caption)
+                        ShortcutBadge(symbol: "⌘O")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .mpShortcut("o")
+                .help("\(L("在 Finder 打開")) ⌘O")
+                .accessibilityLabel(L("在 Finder 打開"))
             }
             // UI-17: 列表自己捲動、封頂高度,視窗縮放自由(單欄後封頂 300→200 再省空間)。
-            if listExpanded {
+            if uiState.listExpanded {
                 ScrollView {
                     VStack(alignment: .leading, spacing: MP.spS) {
                         ForEach(controller.recordings.prefix(10)) { rec in
@@ -228,11 +299,7 @@ struct RootView: View {
             HStack {
                 Text(L("即時逐字稿")).font(MPFont.label).foregroundStyle(.secondary)
                 Spacer()
-                Picker("", selection: $fullTranscript) {
-                    // UI-22:「最近 3 分鐘」→「3 分鐘」,跟「完整」視覺配重更平衡。
-                    Text(L("3 分鐘")).tag(false)
-                    Text(L("完整")).tag(true)
-                }.pickerStyle(.segmented).frame(width: 190).labelsHidden()
+                transcriptRangeControl
             }
             // UI-17/20: 玻璃工具列淨空已搬到 statusCard 首列(單欄後這裡不在頂部)。
             if let err = controller.lastError {
@@ -249,6 +316,9 @@ struct RootView: View {
                     VStack(alignment: .leading, spacing: MP.spM) {
                         if controller.isTranscribing {
                             Text(L("轉逐字稿中…")).font(MPFont.label).foregroundStyle(.secondary)
+                        } else if !controller.transcribeQueued.isEmpty {
+                            // 轉檔中按了轉逐字稿 → 排隊,轉檔完自動接著跑(不再讀到被刪的 .caf)。
+                            Text(L("轉檔中,完成後自動轉逐字稿…")).font(MPFont.label).foregroundStyle(.secondary)
                         }
                         ForEach(visibleTranscript) { line in
                             TranscriptBubble(line: line)
@@ -277,6 +347,47 @@ struct RootView: View {
         }
     }
 
+    /// 「3 分鐘 | 完整 | ⌘L」分段控制。v3 定稿:⌘L 膠囊要在同一個邊框內、用
+    /// 分隔線與選項隔開、不可點——原生 `.pickerStyle(.segmented)` 塞不進第三個
+    /// 不可互動的偽分段,改手刻兩顆分段鈕+Divider+ShortcutBadge,外層共用一個
+    /// 邊框(兩家二審「折衷」處置,見 plan.md v3 決策表)。
+    private var transcriptRangeControl: some View {
+        HStack(spacing: 2) {
+            transcriptRangeSegment(L("3 分鐘"), selected: !uiState.fullTranscript) { uiState.fullTranscript = false }
+            transcriptRangeSegment(L("完整"), selected: uiState.fullTranscript) { uiState.fullTranscript = true }
+            Divider().frame(height: 14)
+            ShortcutBadge(symbol: "⌘L").padding(.leading, 2)
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(MP.line, lineWidth: 0.5))
+        // ⌘L 的實際鍵盤處理走 AppCommands 的選單命令(容器本身不是 Button,掛
+        // .keyboardShortcut 沒有動作可綁,故不重複掛);這裡只給 tooltip。個別
+        // 分段鈕(3 分鐘/完整)保留各自的預設 accessibilityLabel,不用
+        // .accessibilityElement(children: .combine) 合併——那樣 VoiceOver 會
+        // 失去個別分段的可選取性,只有膠囊本身該被隱藏(ShortcutBadge 已內建
+        // accessibilityHidden)。
+        .help("\(L("逐字稿 3 分鐘／完整")) ⌘L")
+    }
+
+    private func transcriptRangeSegment(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(MPFont.caption).fontWeight(selected ? .semibold : .regular)
+                .padding(.horizontal, MP.spS).padding(.vertical, 3)
+                .frame(minWidth: 50)
+                .background(selected ? AnyShapeStyle(.background) : AnyShapeStyle(Color.clear),
+                            in: RoundedRectangle(cornerRadius: 5))
+                .shadow(color: selected ? .black.opacity(0.12) : .clear, radius: 1, y: 0.5)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(selected ? Color.primary : Color.secondary)
+        // 二審 Finding 5(a11y):手刻分段鈕取代原生 .pickerStyle(.segmented)後,
+        // VoiceOver 不再自動念出「已選取」——原生分段控制的語意。個別按鈕仍
+        // 各自可選取(決策 8 已說明為何不合併成單一 accessibilityElement),這裡
+        // 只補回「已選取」的 trait。
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
     // UI-18: follow the newest line while recording. Not gated on "near bottom"
     // (macOS scroll-offset tracking isn't worth the complexity yet) — the 3-minute
     // window keeps the list short, and pausing auto-follow = switch to「完整」.
@@ -290,7 +401,7 @@ struct RootView: View {
     // 「最近 3 分鐘」錨定最後一行時間(非牆鐘)→ 錄音中/結束後/舊檔轉稿語意
     // 一致,不再有 state gate(BUG-20:結束後 gate 讓切換形同虛設)。
     private var visibleTranscript: [TranscriptLine] {
-        TranscriptWindow.visible(controller.liveTranscript, full: fullTranscript)
+        TranscriptWindow.visible(controller.liveTranscript, full: uiState.fullTranscript)
     }
 
     // UI-19: 廣告欄位現階段放大叔的 LinkedIn(Eric 2026-07-02 指定)。
@@ -303,10 +414,18 @@ struct RootView: View {
         HStack(alignment: .firstTextBaseline, spacing: MP.spS) {
             Text("🦜").font(MPFont.caption)
             ViewThatFits(in: .horizontal) {
-                adLink("大叔的 LinkedIn — linkedin.com/in/uncleeric")
-                adLink("大叔的 LinkedIn")
+                adLink("大叔的筆 — uncleric.com")
+                adLink("大叔的筆")
             }
             Spacer(minLength: 0)
+            // 2026-08-23 Eric:build no 回到 footer(官網連結變短後放得下);窄版自動縮成短 hash、再不夠就省略。
+            ViewThatFits(in: .horizontal) {
+                Text(buildStamp)
+                Text(buildStamp.split(separator: " ").last.map(String.init) ?? "")
+                Text("")
+            }
+            .font(MPFont.caption).foregroundStyle(.tertiary).lineLimit(1)
+            .textSelection(.enabled)
         }
         .padding(.horizontal, MP.spL).padding(.vertical, MP.spS)
         .padding(.trailing, 58 + 8)  // = mascot 58 + inset 8
@@ -316,8 +435,9 @@ struct RootView: View {
 
     // UI-21: Link 的 label 明確包 Text 並直接掛 lineLimit(環境傳遞在 macOS 26 對
     //       Link 失效);兩個寬度版本共用,URL 單一真相。
+    // 2026-08-17: LinkedIn → 官網(Eric:不再幫 LinkedIn 導流)。
     private func adLink(_ label: String) -> some View {
-        Link(destination: URL(string: "https://www.linkedin.com/in/uncleeric")!) {
+        Link(destination: URL(string: "https://www.uncleric.com/")!) {
             Text(label).font(MPFont.caption).lineLimit(1)
         }
     }
@@ -341,13 +461,9 @@ struct LevelBar: View {
     // UI-22 Phase C: 20 段 Capsule 陣列取代單條連續 bar,更有「專業電平表」感——
     // 亮段數 = 段位映射(非連續寬度),錄音中亮段加發光,段數變化時彈簧動畫。
     private static let segmentCount = 20
-    // UI-22 主 session 補修:低電平不歸零——有訊號(value>微小門檻)至少亮 1 段,
-    // 對齊舊連續條 max(2px) 的「收音中永遠看得到」語意(實測 say 有收音卻 0 段亮)。
-    private var litSegments: Int {
-        let v = min(1, max(0, value))
-        guard v > 0.005 else { return 0 }
-        return max(1, Int((v * Float(Self.segmentCount)).rounded()))
-    }
+    // 2026-08-23(Eric 拍板 3):改真 dB 刻度 −60…−12 dBFS(MeterScale,三處電平表同刻度);
+    // 線性下一般語音只亮 3/20 像沒收到音。低電平至少亮 1 段的 UI-22 語意保留在 MeterScale。
+    private var litSegments: Int { MeterScale.segments(value, of: Self.segmentCount) }
     var body: some View {
         HStack(spacing: MP.spS) {
             Text(label).font(MPFont.caption.weight(.medium)).foregroundStyle(color).frame(width: 34, alignment: .leading)
@@ -408,40 +524,127 @@ struct RecordingRow: View {
     // UI-22 Phase B: 三層材質最輕的一層——無底色,hover 才浮出淡底;不加逐項描邊,
     // 行與行之間靠卡片間距(MP.spS)分隔,不加 hairline。
     @State private var isHovering = false
-    private var isPlaying: Bool { controller.playingURL == rec.url }
+    /// 這一列是不是「使用中的播放器」(播放中/暫停中/播完待收回都算)。
+    private var isActive: Bool { controller.playingURL == rec.url }
     // 副標：處理中… / [時長 · ]雙聲道[ · 已轉稿]
     private var subtitle: String {
         if rec.isConverting { return L("處理中…") }
         let kind = L(rec.hasTranscript ? "雙聲道 · 已轉稿" : "雙聲道")
-        guard rec.duration > 0 else { return kind }
-        return "\(Self.durationLabel(rec.duration)) · \(kind)"
+        // UI-28b 降級:波形算失敗/逾時 → 副標尾端標示,不報錯框。
+        let tail = (isActive && controller.waveformFailed.contains(rec.url)) ? " · \(L("波形不可用"))" : ""
+        guard rec.duration > 0 else { return kind + tail }
+        return "\(Self.durationLabel(rec.duration)) · \(kind)\(tail)"
     }
     private static func durationLabel(_ t: TimeInterval) -> String {
         let s = Int(t.rounded())
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
     }
+    // UI-27(Eric 拍板 B):主鈕 ▶⇄❚❚,播完變 ↻;顏色:播放中紅、其餘藍。
+    private var playIcon: String {
+        guard isActive else { return "play.fill" }
+        switch controller.playbackPhase {
+        case .playing: return "pause.fill"
+        case .paused: return "play.fill"
+        case .ended: return "arrow.counterclockwise"
+        }
+    }
+    private var playLabel: String {
+        guard isActive else { return L("播放") }
+        switch controller.playbackPhase {
+        case .playing: return L("暫停")
+        case .paused: return L("繼續")
+        case .ended: return L("重播")
+        }
+    }
     var body: some View {
-        HStack(spacing: MP.spS) {
-            Button { controller.togglePlay(rec) } label: {
-                Image(systemName: isPlaying ? "stop.fill" : "play.fill")
-                    .font(MPFont.body).foregroundStyle(isPlaying ? MP.recRed : MP.blue)
-            }.buttonStyle(.accessoryBar)
-            // UI-22: 標題 13pt semibold / 副標 caption——主從不再只靠顏色分辨。
-            VStack(alignment: .leading, spacing: MP.spXS) {
-                Text(rec.title).font(MPFont.body.weight(.semibold)).lineLimit(1)
-                Text(subtitle)
-                    .font(MPFont.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: MP.spXS) {
+            HStack(spacing: MP.spS) {
+                Button { controller.togglePlay(rec) } label: {
+                    Image(systemName: playIcon)
+                        .font(MPFont.body)
+                        .foregroundStyle(isActive && controller.playbackPhase == .playing ? MP.recRed : MP.blue)
+                        .frame(width: 16)
+                }
+                .buttonStyle(.accessoryBar)
+                .help(playLabel)
+                .accessibilityLabel("\(playLabel) \(rec.title)")
+                // UI-22: 標題 13pt semibold / 副標 caption——主從不再只靠顏色分辨。
+                VStack(alignment: .leading, spacing: MP.spXS) {
+                    Text(rec.title).font(MPFont.body.weight(.semibold)).lineLimit(1)
+                    // UI-28 方案 4:播放中副標右側放兩條短型即時電平;窄版放不下時
+                    // ViewThatFits 退成副標/電平兩行。
+                    if isActive {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: MP.spM) {
+                                Text(subtitle).font(MPFont.caption).foregroundStyle(.secondary).fixedSize()
+                                Spacer(minLength: MP.spS)
+                                miniMeters
+                            }
+                            VStack(alignment: .leading, spacing: MP.spXS) {
+                                Text(subtitle).font(MPFont.caption).foregroundStyle(.secondary)
+                                miniMeters
+                            }
+                        }
+                    } else {
+                        Text(subtitle)
+                            .font(MPFont.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+                // UI-30(Eric 2026-08-23):已轉稿 → 打開 .txt;未轉稿 → 轉稿。重轉走右鍵。
+                Button {
+                    if rec.hasTranscript { NSWorkspace.shared.open(rec.transcriptURL) }
+                    else { controller.transcribe(rec) }
+                } label: { Image(systemName: "doc.text") }
+                    .buttonStyle(.accessoryBar).foregroundStyle(rec.hasTranscript ? Color.green : .primary)
+                    .help(L(rec.hasTranscript ? "打開逐字稿" : "轉逐字稿"))
+                    .accessibilityLabel(L(rec.hasTranscript ? "打開逐字稿" : "轉逐字稿"))
             }
-            Spacer(minLength: 0)
-            Button { controller.transcribe(rec) } label: { Image(systemName: "doc.text") }
-                .buttonStyle(.accessoryBar).foregroundStyle(rec.hasTranscript ? Color.green : .primary)
-                .help(L("轉逐字稿"))
+            // UI-27:播放中的列多一行進度列(點擊/拖曳 seek)。
+            if isActive {
+                PlaybackProgressBar(time: controller.playbackTime,
+                                    duration: controller.playbackDuration,
+                                    onSeek: { controller.seek(to: $0) },
+                                    onRestart: { controller.restartPlayback() },
+                                    waveform: controller.waveforms[rec.url])
+                    .padding(.leading, 16 + MP.spS)   // 對齊標題(主鈕寬 16 + 間距)
+                    .padding(.trailing, MP.spXS)
+                    // UI-28b:列展開就開始背景算波形(冪等;算好前先畫純軌道)。
+                    .onAppear { controller.requestWaveform(for: rec.url) }
+            }
         }
         .padding(MP.spS)
         .background(RoundedRectangle(cornerRadius: 8).fill(
-            isPlaying ? MP.blue.opacity(0.08) : (isHovering ? Color.primary.opacity(0.06) : Color.clear)))
+            isActive ? MP.blue.opacity(0.08) : (isHovering ? Color.primary.opacity(0.06) : Color.clear)))
         .onHover { isHovering = $0 }
+        .animation(.easeInOut(duration: 0.15), value: isActive)
+        // UI-27:「從頭播放」放右鍵選單(主要入口)+「錄音」選單;停止播放一併給。
+        .contextMenu {
+            if isActive {
+                Button(L("從頭播放")) { controller.restartPlayback() }
+                Button(L("停止播放")) { controller.stopPlayback() }
+            } else {
+                Button(L("播放")) { controller.togglePlay(rec) }
+            }
+            Divider()
+            if rec.hasTranscript {
+                Button(L("打開逐字稿")) { NSWorkspace.shared.open(rec.transcriptURL) }
+                Button(L("重新轉逐字稿")) { controller.transcribe(rec) }
+                    .disabled(controller.isTranscribing)
+            } else {
+                Button(L("轉逐字稿")) { controller.transcribe(rec) }
+                    .disabled(controller.isTranscribing)
+            }
+        }
+    }
+
+    private var miniMeters: some View {
+        HStack(spacing: MP.spM) {
+            MiniLevelMeter(label: L("對方"), value: controller.playbackOtherLevel, color: MP.coral)
+            MiniLevelMeter(label: L("你"), value: controller.playbackYouLevel, color: MP.blue)
+        }
+        .fixedSize()
     }
 }
 
@@ -451,29 +654,52 @@ struct ControlBar: View {
         HStack(spacing: MP.spS) {
             switch controller.state {
             case .idle:
-                redButton("開始錄音", "record.circle") { controller.startRecording() }
+                redButton("開始錄音", "record.circle", "⌘R", "r") { controller.startRecording() }
             case .recording:
-                plainButton("暫停", "pause") { controller.pause() }
-                redButton("結束", "stop") { controller.stop() }
+                plainButton("暫停", "pause", "⌘P", "p") { controller.pause() }
+                redButton("結束", "stop", "⌘E", "e") { controller.stop() }
             case .paused:
-                plainButton("繼續", "play") { controller.resume() }
-                redButton("結束", "stop") { controller.stop() }
+                plainButton("繼續", "play", "⌘P", "p") { controller.resume() }
+                redButton("結束", "stop", "⌘E", "e") { controller.stop() }
+                // ⌘N 定稿只在 finished 狀態啟用(見 AppCommands)——這裡維持既有
+                // 「暫停中也能按新錄音」的直接點擊行為,但不掛膠囊/快捷鍵,避免
+                // 本地 .keyboardShortcut 在 paused 狀態搶先觸發、繞過選單的
+                // finished-only 判斷式。
                 plainButton("新錄音", "plus") { controller.newRecording() }
             case .finished:
                 if let last = controller.recordings.first {
-                    plainButton("轉逐字稿", "doc.text") { controller.transcribe(last) }
+                    plainButton("轉逐字稿", "doc.text", "⌘T", "t") { controller.transcribe(last) }
                 }
-                plainButton("新錄音", "plus") { controller.newRecording() }
+                plainButton("新錄音", "plus", "⌘N", "n") { controller.newRecording() }
             }
         }
     }
 
-    private func redButton(_ key: String, _ icon: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) { Label(L(key), systemImage: icon).font(MPFont.body.weight(.medium)) }
-            .buttonStyle(.borderedProminent).tint(MP.recRed)
+    private func redButton(_ key: String, _ icon: String, _ badge: String? = nil,
+                            _ shortcutKey: Character? = nil, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: MP.spXS) {
+                Label(L(key), systemImage: icon).font(MPFont.body.weight(.medium))
+                if let badge { ShortcutBadge(symbol: badge, onAccent: true) }
+            }
+        }
+        // UI-24 修正:失焦不變灰(見 MPButtonStyle.swift)。
+        .buttonStyle(.mpProminent)
+        .mpShortcut(shortcutKey)
+        .help(badge.map { "\(L(key)) \($0)" } ?? L(key))
+        .accessibilityLabel(L(key))
     }
-    private func plainButton(_ key: String, _ icon: String, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) { Label(L(key), systemImage: icon).font(MPFont.body) }
-            .buttonStyle(.bordered)
+    private func plainButton(_ key: String, _ icon: String, _ badge: String? = nil,
+                              _ shortcutKey: Character? = nil, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: MP.spXS) {
+                Label(L(key), systemImage: icon).font(MPFont.body)
+                if let badge { ShortcutBadge(symbol: badge) }
+            }
+        }
+        .buttonStyle(.bordered)
+        .mpShortcut(shortcutKey)
+        .help(badge.map { "\(L(key)) \($0)" } ?? L(key))
+        .accessibilityLabel(L(key))
     }
 }

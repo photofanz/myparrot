@@ -108,3 +108,26 @@ final class MonoDownconverter {
         return Array(UnsafeBufferPointer(start: ch[0], count: Int(out.frameLength)))
     }
 }
+
+/// 電平表顯示刻度(Eric 2026-08-23 拍板「三處都改真 dB 刻度」):
+/// Core 的 level 值 = min(1, RMS×4)(見 `rmsLevel`),所以 value 1.0 ≡ RMS −12 dBFS,
+/// value 0.16 ≡ 一般語音 −28 dBFS。顯示改成 dB 線性:**底 −50 dBFS → 0%、頂 −12 dBFS
+/// (= 現有 ×4 上限)→ 100%**;語音 −28 ≈ 58%(12/20)、小聲 −40 ≈ 26%。底原設 −60,
+/// Eric 22:28 實機截圖 Yeti 沒講話亮 3/20(≈ −53 dBFS 底噪)→ 底抬到 −50,底噪落進
+/// 「有訊號至少 1 段」那一格(segments 的 0.005 ≈ −58 dBFS 門檻保留,「收音中」仍看得到一格)。線性刻度下語音只佔 15%,看起來像沒收到音。
+public enum MeterScale {
+    public static let floorDB: Float = -50
+    public static let ceilDB: Float = -12
+    /// value(0…1,Core 標度)→ 顯示比例 0…1。
+    public static func fraction(_ value: Float) -> Float {
+        guard value > 0 else { return 0 }
+        let rms = min(1, value) / 4
+        let db = 20 * log10f(rms)
+        return min(1, max(0, (db - floorDB) / (ceilDB - floorDB)))
+    }
+    /// 段數映射:有訊號(value > 0.005)至少亮 1 段(延續 UI-22「收音中永遠看得到」語意)。
+    public static func segments(_ value: Float, of count: Int) -> Int {
+        guard value > 0.005 else { return 0 }
+        return max(1, Int((fraction(value) * Float(count)).rounded()))
+    }
+}

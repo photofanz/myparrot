@@ -18,6 +18,9 @@ public struct Recording: Identifiable, Hashable {
         self.isConverting = isConverting
     }
 
+    /// 同名逐字稿 sidecar(`.txt`);`hasTranscript` 即此檔存在。
+    public var transcriptURL: URL { url.deletingPathExtension().appendingPathExtension("txt") }
+
     /// Display filename per the PRD template: 日期+時間+會議名稱
     public static func fileName(date: Date, title: String) -> String {
         let f = DateFormatter()
@@ -25,6 +28,26 @@ public struct Recording: Identifiable, Hashable {
         let stamp = f.string(from: date)
         let safe = title.isEmpty ? "錄音" : title
         return "\(stamp) \(safe).caf"
+    }
+
+    /// 錄音/逐字稿會長出的副檔名——探測檔名衝突時全部算(#892)。
+    public static let derivedExtensions = ["caf", "m4a", "txt", "srt", "json"]
+
+    /// #892:同一分鐘同標題兩次錄音會算出同檔名 → 第二次靜默覆蓋第一次。
+    /// 在 `dir` 內探測同 stem 的任一衍生檔存在就加 Finder 式後綴「 2」「 3」…;
+    /// 無衝突時與 `fileName` 完全相同(REC-01 範本不變)。只防同機單進程;跨進程
+    /// 同秒競爭交給並存協定(RENAME_EXCL)。
+    public static func uniqueFileName(date: Date, title: String, in dir: URL,
+                                      fm: FileManager = .default) -> String {
+        let base = fileName(date: date, title: title)
+        let stem = String(base.dropLast(4))   // 去掉 ".caf"
+        func taken(_ s: String) -> Bool {
+            derivedExtensions.contains { fm.fileExists(atPath: dir.appendingPathComponent("\(s).\($0)").path) }
+        }
+        guard taken(stem) else { return base }
+        var n = 2
+        while taken("\(stem) \(n)") && n < 1000 { n += 1 }
+        return "\(stem) \(n).caf"
     }
 }
 

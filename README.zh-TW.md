@@ -4,9 +4,25 @@
 
 [English README →](README.md)
 
-![主視窗 — 錄音中,即時逐字稿自動標好講者](docs/img/main-window.png)
+![主視窗 — 逐字稿自動標好講者;播放列有雙聲道波形(上=對方、下=你),點一下就跳到那一句](docs/img/main-window.png)
 
-<img src="docs/img/mini-mode.png" width="412" alt="錄音中的懸浮迷你模式">
+<p>
+<img src="docs/img/recording.png" width="560" alt="錄音中 — 雙軌電平表,快捷鍵直接印在按鈕上">
+</p>
+<p>
+<img src="docs/img/narrow-mode.png" width="260" alt="窄版視窗(320pt)"> &nbsp;
+<img src="docs/img/mini-mode.png" width="300" alt="懸浮迷你模式">
+</p>
+
+## 0.3.0 新東西
+
+- **波形＋播放進度**:播放舊錄音時,列內直接畫出雙聲道波形(上=對方、下=你),一眼看出誰在哪段講話;點波形任一處就跳過去,▶⇄❚❚ 暫停續播、播完 ↻ 重播。波形算好會快取在本機,重開 app 秒出。
+- **鍵盤快捷鍵**:⌘R 開始/⌘P 暫停/⌘E 結束/⌘N 新錄音/⌘T 轉逐字稿/⌘O Finder/⌘1 切換視窗模式/⌘L 逐字稿 3 分鐘·完整/⌘K 收折列表/⌘, 設定——**快捷鍵直接印在按鈕上**,不用背。
+- **三種視窗模式一鍵輪巡**(⌘1):標準(記住你拉的大小)→ 窄版 320pt → 懸浮迷你列。
+- **電平表改 dB 刻度**:一般語音亮一半以上、安靜時只剩一格,不再「明明在講話卻像沒收到音」。
+- **`myparrot` 命令列工具**:給終端機使用者和 AI agent 用——`record / stop / status / transcribe / list / devices / config / hooks`,`--json` 事件流;**hooks** 可在錄音結束後自動把逐字稿交給任何命令(例如 Claude Code 做會議記錄)。見下方。
+- **新版本提醒**:啟動時背景查一次 GitHub Releases,有新版只在主畫面放一條非阻斷提示(可在設定關閉;只打 `api.github.com`,不送任何資料)。
+- 修正:停止錄音後立刻轉逐字稿不再失敗;同一分鐘同標題連錄兩段不再互相覆蓋;已轉稿的錄音按文件鈕直接打開逐字稿。
 
 ## 為什麼分軌?
 
@@ -22,7 +38,8 @@
 - **離線回音消除**(選用、非破壞式——另存 `*_aec.m4a`,原檔永不被動)
 - CAF→m4a 自動轉檔、錄音中防誤關、懸浮迷你模式、增益+軟限幅
 - 介面:繁中/簡中/英/日/韓
-- 主畫面左下 **build 標記**,永遠知道自己跑的是哪一版
+- 主畫面右下 **build 標記**,永遠知道自己跑的是哪一版
+- **隱私**:全程離線。唯一會連網的是「新版本提醒」(GitHub Releases,可關)與你自己按下的 Whisper 模型下載
 
 ## 需求
 
@@ -54,6 +71,32 @@ open ~/Applications/MyParrot.app
 2. **`.app` 別放 iCloud 同步目錄。** iCloud Drive 會反覆重貼 Finder xattr、弄壞簽章——所以腳本裝到 `~/Applications`。
 3. **麥克風別用藍牙耳機。** 任何 app 一開藍牙麥,整條藍牙鏈路就從 A2DP 掉到窄頻 HFP——**連對方的聲音都跟著變電話音質**。耳機拿來聽,講話用內建/有線/USB 麥。(自動選麥已避開藍牙;手動選仍可,但會警告。)
 4. **clone 後第一次 `swift build` 就失敗?** 先跑 `bash scripts/fetch-whisper.sh`。Whisper 引擎的二進位(~35MB)沒進 git——這支腳本第一次會從原始碼建置(需要 Xcode + `cmake`)。
+
+## `myparrot` 命令列工具(0.3.0 起)
+
+```bash
+bash scripts/build-cli.sh        # 建置+簽章,裝到 ~/bin/myparrot(Whisper 引擎借用 ~/Applications/MyParrot.app 的框架)
+myparrot                          # 終端機直接打:互動選單(選麥克風、開錄、看電平)
+myparrot record --name 產品週會 --max-duration 2h   # 前景錄音;Ctrl-C 或另開終端 myparrot stop
+myparrot transcribe "~/Documents/MyParrot/2026-08-20 1400 產品週會.m4a"
+myparrot list --json | jq .       # 給 agent/腳本:每行一個 JSON 事件,非 TTY 自動零 ANSI
+```
+
+**Hooks** — 設定檔 `~/.config/myparrot/config.json` 的 `hooks` 段,錄音結束後自動(或手動 `myparrot hooks run`)把逐字稿交給任意命令;佔位符 `{audio}` `{transcript}` `{name}` `{dir}`,完整 metadata 走 stdin JSON。第一次要 `myparrot hooks approve`(trust-on-first-use,改了設定要重核准)。
+
+```jsonc
+{
+  "hooks": {
+    "minutes": {   // 逐字稿就緒後執行——讓 Claude Code 直接寫會議記錄
+      "command": "claude -p \"讀 {transcript},用繁中寫一頁會議記錄,存成 {dir}/{name}.md\"",
+      "cwd": "~/Documents/MyParrot",
+      "auto": true
+    }
+  }
+}
+```
+
+也可以用 `transcribe` hook **取代**內建轉錄(交給你自己的 ASR),失敗自動回退內建引擎;另一種範本是把「錄音已好」丟給既有的 AI session/待辦系統,由它接手後製。權限歸屬=你的終端機 app(第一次會問麥克風/系統音訊)。
 
 ## 已知限制
 

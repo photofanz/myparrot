@@ -5,3 +5,4 @@ MyParrot.app/
 .DS_Store
 Frameworks/
 *.zip
+docs/worklogs/**/*.m4a

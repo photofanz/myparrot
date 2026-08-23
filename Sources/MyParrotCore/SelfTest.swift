@@ -29,7 +29,14 @@ public enum SelfTest {
             echoCancel(),
             aecNoEchoGate(),
             sysSilenceWatchdog(),
-            btGapFill()
+            btGapFill(),
+            caseUpdateVersionCompare(),
+            caseUpdateReleaseDecode(),
+            caseUpdateSkipLogic(),
+            waveformBuckets(),
+            waveformCacheRoundTrip(),
+            uniqueFileNameProbe(),
+            meterScaleMapping()
         ]
     }
 
@@ -388,7 +395,186 @@ public enum SelfTest {
                       detail: "無縫=\(contig) 抖動=\(jitter) 真缺口=\(real) 巨跳=\(huge) 未播種=\(unseed) 倒退=\(rewind) 靜音buffer=\(silence)")
     }
 
+    // UPD-01:版號解析/比較純函式 `isNewer(remoteTag:localVersion:)`——表驅動涵蓋
+    // v 前綴、雙位數段(字串比較會錯的雷:"0.10" < "0.9")、補 0 等值("0.3"=="0.3.0")、
+    // 非數字段(如 "-beta")→ nil(dev build/怪異 tag 一律不判斷,不誤報)。
+    static func caseUpdateVersionCompare() -> Result {
+        let cases: [(remote: String, local: String, want: Bool?)] = [
+            ("v0.3.0", "0.2.0", true),
+            ("0.2.0", "0.2.0", false),
+            ("v0.2.1", "0.2.0", true),
+            ("0.10.0", "0.9.9", true),
+            ("0.3", "0.3.0", false),
+            ("0.2.0", "0.3.0", false),
+            ("abc", "0.2.0", nil),
+            ("v1.0.0-beta", "1.0.0", nil)
+        ]
+        var failures: [String] = []
+        for c in cases {
+            let got = isNewer(remoteTag: c.remote, localVersion: c.local)
+            if got != c.want { failures.append("(\(c.remote),\(c.local))→\(String(describing: got)),want \(String(describing: c.want))") }
+        }
+        return Result(name: "UPD-01 版號解析/比較(v 前綴/補 0/非數字段)", passed: failures.isEmpty,
+                      detail: failures.isEmpty ? "" : failures.joined(separator: "; "))
+    }
+
+    // UPD-02:releases/latest JSON decode——fixture 用真實 v0.2.0 回應子集+多餘欄位,
+    // 驗證 GitHubRelease 容忍未知欄位(Decodable 預設行為,但明確驗證鎖住)。
+    static func caseUpdateReleaseDecode() -> Result {
+        let json = """
+        {
+          "tag_name": "v0.2.0",
+          "html_url": "https://github.com/tingyulu/MyParrot/releases/tag/v0.2.0",
+          "name": "v0.2.0",
+          "prerelease": false,
+          "draft": false,
+          "published_at": "2026-07-11T12:00:00Z",
+          "assets": [{"browser_download_url": "https://example.com/x.zip"}]
+        }
+        """
+        do {
+            let release = try JSONDecoder().decode(GitHubRelease.self, from: Data(json.utf8))
+            let ok = release.tagName == "v0.2.0"
+                && release.htmlURL.absoluteString == "https://github.com/tingyulu/MyParrot/releases/tag/v0.2.0"
+            return Result(name: "UPD-02 GitHubRelease decode(容忍未知欄位)", passed: ok,
+                          detail: ok ? "" : "tagName=\(release.tagName) htmlURL=\(release.htmlURL)")
+        } catch {
+            return Result(name: "UPD-02 GitHubRelease decode(容忍未知欄位)", passed: false, detail: "\(error)")
+        }
+    }
+
+    // UPD-03:略過此版邏輯 `shouldPresentBanner`——skip 後同版(用 AppVersion 等值比,
+    // 非字串)不提示,更新的下一版照常提示,無 skip 記錄照常提示。
+    static func caseUpdateSkipLogic() -> Result {
+        let a = shouldPresentBanner(remoteTag: "v0.3.0", skipped: "0.3.0")   // 同版→不提示
+        let b = shouldPresentBanner(remoteTag: "v0.4.0", skipped: "0.3.0")  // 更新版→提示
+        let c = shouldPresentBanner(remoteTag: "v0.3.0", skipped: nil)      // 無 skip→提示
+        let ok = !a && b && c
+        return Result(name: "UPD-03 略過此版邏輯", passed: ok,
+                      detail: ok ? "" : "同版=\(a)(要 false) 新版=\(b)(要 true) 無skip=\(c)(要 true)")
+    }
+
     // MARK: - Helpers
+
+    // UI-28b:波形分析——前半只有左聲道有音、後半只有右聲道;驗桶的分佈、正規化、
+    // 分段讀檔不讀過檔尾、downsample 取最大值。
+    static func waveformBuckets() -> Result {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp_wave_\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let fmt = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+            let frames = 48_000 * 2 + 12_345          // 2.26 秒,故意不是 chunk 的整數倍
+            // 寫檔收在閉包裡:AVAudioFile 寫入端要 deinit 才會把尾端 flush 進檔頭,
+            // 否則同 scope 立刻讀回會少最後一段(實測少 1,785 frames)。
+            try {
+                let file = try AVAudioFile(forWriting: url, settings: fmt.settings)
+                let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames))!
+                buf.frameLength = AVAudioFrameCount(frames)
+                let l = buf.floatChannelData![0], r = buf.floatChannelData![1]
+                for i in 0..<frames {
+                    let t = Float(i) / 48_000
+                    let tone = sinf(2 * .pi * 440 * t)
+                    l[i] = i < frames / 2 ? tone * 0.5 : 0
+                    r[i] = i < frames / 2 ? 0 : tone * 0.25
+                }
+                try file.write(from: buf)
+            }()
+            let w = try WaveformAnalyzer.analyze(url: url, buckets: 40, chunkFrames: 8_192)
+            let lFront = w.left[0..<18].min() ?? 0, lBack = w.left[22..<40].max() ?? 1
+            let rFront = w.right[0..<18].max() ?? 1, rBack = w.right[22..<40].min() ?? 0
+            let peakIsOne = abs((w.left.max() ?? 0) - 1) < 0.01
+            let halfRight = abs((w.right.max() ?? 0) - 0.5) < 0.05   // 右=左的一半,共用最大值正規化
+            let ds = w.downsampled(to: 10)
+            let dsOK = ds.bucketCount == 10 && abs((ds.left.max() ?? 0) - 1) < 0.01
+            let ok = lFront > 0.9 && lBack < 0.01 && rFront < 0.01 && rBack > 0.45
+                && peakIsOne && halfRight && dsOK && abs(w.duration - Double(frames) / 48_000) < 0.01
+            return Result(name: "波形桶(左前半/右後半/正規化/downsample)", passed: ok,
+                          detail: String(format: "L前=%.2f L後=%.3f R前=%.3f R後=%.2f dur=%.2f ds=%d",
+                                         lFront, lBack, rFront, rBack, w.duration, ds.bucketCount))
+        } catch {
+            return Result(name: "波形桶(左前半/右後半/正規化/downsample)", passed: false, detail: "\(error)")
+        }
+    }
+
+    // UI-28c:波形快取落檔——round-trip、key 隨 mtime 變、損毀檔回 nil。
+    static func waveformCacheRoundTrip() -> Result {
+        let tmp = FileManager.default.temporaryDirectory
+        let dir = tmp.appendingPathComponent("mp_wcache_\(UUID().uuidString)", isDirectory: true)
+        let audio = tmp.appendingPathComponent("mp_wcache_\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: dir); try? FileManager.default.removeItem(at: audio) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data(repeating: 7, count: 1024).write(to: audio)
+            let w = Waveform(left: [0, 0.5, 1], right: [1, 0.25, 0], duration: 3.5)
+            guard WaveformCache.save(w, for: audio, in: dir) else {
+                return Result(name: "波形快取落檔(round-trip/失效/損毀)", passed: false, detail: "save 失敗")
+            }
+            let back = WaveformCache.load(for: audio, in: dir)
+            let roundTrip = back == w
+            let key1 = WaveformCache.key(for: audio)
+            // 改 mtime(往前 100 秒)→ key 變 → 舊快取讀不到
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -100)], ofItemAtPath: audio.path)
+            let key2 = WaveformCache.key(for: audio)
+            let invalidated = key1 != key2 && WaveformCache.load(for: audio, in: dir) == nil
+            // 損毀 json → nil
+            try Data("{not json".utf8).write(to: WaveformCache.fileURL(for: key2!, in: dir))
+            let corruptNil = WaveformCache.load(for: audio, in: dir) == nil
+            let missingNil = WaveformCache.key(for: dir.appendingPathComponent("nope.m4a")) == nil
+            let ok = roundTrip && invalidated && corruptNil && missingNil
+            return Result(name: "波形快取落檔(round-trip/失效/損毀)", passed: ok,
+                          detail: "roundTrip=\(roundTrip) invalidated=\(invalidated) corruptNil=\(corruptNil) missingNil=\(missingNil)")
+        } catch {
+            return Result(name: "波形快取落檔(round-trip/失效/損毀)", passed: false, detail: "\(error)")
+        }
+    }
+
+    // #892:同分鐘同標題防覆蓋——空目錄照範本;有 X.caf → X 2;有 X.m4a + X 2.txt → X 3。
+    static func uniqueFileNameProbe() -> Result {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp_uniq_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var c = DateComponents(); c.year = 2026; c.month = 8; c.day = 23; c.hour = 16; c.minute = 55
+            let date = Calendar.current.date(from: c)!
+            let a = Recording.uniqueFileName(date: date, title: "", in: dir)
+            let emptyOK = a == "2026-08-23 1655 錄音.caf"
+            try Data().write(to: dir.appendingPathComponent("2026-08-23 1655 錄音.caf"))
+            let b = Recording.uniqueFileName(date: date, title: "", in: dir)
+            let secondOK = b == "2026-08-23 1655 錄音 2.caf"
+            try FileManager.default.removeItem(at: dir.appendingPathComponent("2026-08-23 1655 錄音.caf"))
+            try Data().write(to: dir.appendingPathComponent("2026-08-23 1655 錄音.m4a"))   // 已轉檔的舊錄音
+            try Data().write(to: dir.appendingPathComponent("2026-08-23 1655 錄音 2.txt"))  // 只剩逐字稿也算佔用
+            let cName = Recording.uniqueFileName(date: date, title: "", in: dir)
+            let thirdOK = cName == "2026-08-23 1655 錄音 3.caf"
+            let ok = emptyOK && secondOK && thirdOK
+            return Result(name: "同分鐘同標題防覆蓋(後綴 2/3)", passed: ok, detail: "\(a) | \(b) | \(cName)")
+        } catch {
+            return Result(name: "同分鐘同標題防覆蓋(後綴 2/3)", passed: false, detail: "\(error)")
+        }
+    }
+
+    // 電平表 dB 刻度:−60 dBFS→0、−12 dBFS(value 1)→1、一般語音 −28 dBFS(0.16)→~0.67、
+    // 靜音門檻以下 0、有訊號至少 1 段、單調遞增。
+    static func meterScaleMapping() -> Result {
+        func v(_ dbfs: Float) -> Float { powf(10, dbfs / 20) * 4 }
+        let zero = MeterScale.fraction(0) == 0 && MeterScale.fraction(v(-70)) == 0
+        let floor = abs(MeterScale.fraction(v(-50))) < 0.01
+        let top = abs(MeterScale.fraction(1.0) - 1) < 0.01
+        let speech = MeterScale.fraction(0.16)
+        let speechOK = speech > 0.55 && speech < 0.62
+        let seg20 = MeterScale.segments(0.16, of: 20), seg8 = MeterScale.segments(0.16, of: 8)
+        let segOK = seg20 == 12 && seg8 == 5
+        let noise = MeterScale.segments(v(-53), of: 20) == 1   // Yeti 底噪(Eric 22:28 實測 3/20)→ 只亮 1 段
+        let minOne = noise && MeterScale.segments(0.006, of: 20) == 1 && MeterScale.segments(0.004, of: 20) == 0
+        let mono = (1...100).map { MeterScale.fraction(Float($0) / 100) }
+        let monotone = zip(mono, mono.dropFirst()).allSatisfy { $0 <= $1 }
+        let ok = zero && floor && top && speechOK && segOK && minOne && monotone
+        return Result(name: "電平表 dB 刻度(−50…−12 dBFS)", passed: ok,
+                      detail: String(format: "speech=%.2f seg20=%d seg8=%d floor=%@ top=%@ mono=%@", speech, seg20, seg8,
+                                     floor ? "ok" : "x", top ? "ok" : "x", monotone ? "ok" : "x"))
+    }
 
     private static func makeMono(_ sampleRate: Double, _ frames: Int, _ value: Float) -> AVAudioPCMBuffer {
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,

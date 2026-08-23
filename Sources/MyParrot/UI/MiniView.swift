@@ -3,9 +3,13 @@ import MyParrotCore
 
 /// Floating mini mode — always-on-top pill with the mascot, timer, dual meters,
 /// and transport. (Window-level "float above all" is set via NSWindow in v1.x.)
+/// v3 定稿:迷你模式只留 icon,不印 ShortcutBadge 膠囊(空間小)——每顆鈕改用
+/// .help() 帶出「功能名 ⌘鍵」提示;⌘R/⌘P/⌘E/⌘1 的實際鍵盤處理走 App 層
+/// AppCommands(Commands 掛在 Scene,跟目前顯示哪個 View 無關,mini 模式下
+/// 天生就有效,不用在這裡重複接線)。
 struct MiniView: View {
     let controller: RecordingController
-    @Binding var miniMode: Bool
+    let windowMode: WindowModeManager
 
     var body: some View {
         HStack(spacing: MP.spS) {
@@ -23,16 +27,18 @@ struct MiniView: View {
 
             switch controller.state {
             case .recording:
-                iconBtn("pause") { controller.pause() }
-                iconBtn("stop") { controller.stop() }
+                iconBtn("pause", label: L("暫停"), shortcut: "⌘P") { controller.pause() }
+                iconBtn("stop", label: L("結束"), shortcut: "⌘E") { controller.stop() }
             case .paused:
-                iconBtn("play") { controller.resume() }
-                iconBtn("stop") { controller.stop() }
+                iconBtn("play", label: L("繼續"), shortcut: "⌘P") { controller.resume() }
+                iconBtn("stop", label: L("結束"), shortcut: "⌘E") { controller.stop() }
             default:
-                iconBtn("record.circle") { controller.startRecording() }
+                iconBtn("record.circle", label: L("開始錄音"), shortcut: "⌘R") { controller.startRecording() }
             }
-            iconBtn("plus") { controller.newRecording() }
-            iconBtn("arrow.up.left.and.arrow.down.right") { miniMode = false }
+            iconBtn("plus", label: L("新錄音")) { controller.newRecording() }
+            // 「展開」= 回標準視窗,跟按 ⌘1 從迷你往下一態走是同一個 cycle() 動作
+            // (定稿:迷你「展開」=回①,不是額外一個獨立按鈕)。
+            iconBtn(windowMode.mode.icon, label: L("切換模式"), shortcut: "⌘1") { windowMode.cycle() }
         }
         .padding(.horizontal, MP.spM).padding(.vertical, MP.spS)
         .frame(minWidth: 300)
@@ -53,8 +59,11 @@ struct MiniView: View {
         }
     }
 
-    private func iconBtn(_ name: String, _ act: @escaping () -> Void) -> some View {
+    private func iconBtn(_ name: String, label: String, shortcut: String? = nil,
+                          _ act: @escaping () -> Void) -> some View {
         Button(action: act) { Image(systemName: name).font(MPFont.title) }
             .buttonStyle(.plain)
+            .help(shortcut.map { "\(label) \($0)" } ?? label)
+            .accessibilityLabel(label)
     }
 }

@@ -57,6 +57,20 @@ public final class RecordingController {
 
     // Playback (錄音檔列表)
     public var playingURL: URL?
+    // UI-27/28 (2026-08-23): 播放進度 + 列內即時雙聲道電平。
+    /// 播放器狀態:`playing`/`paused`/`ended`(播完 → UI 顯示 ↻ 重播,3 秒後收回)。
+    public enum PlaybackPhase: Sendable { case playing, paused, ended }
+    public var playbackPhase: PlaybackPhase = .playing
+    public var playbackTime: TimeInterval = 0
+    public var playbackDuration: TimeInterval = 0
+    /// 檔案左(對方)/右(你)聲道即時電平,標度同錄音 rmsLevel(線性 ×4, 0…1)。
+    public var playbackOtherLevel: Float = 0
+    public var playbackYouLevel: Float = 0
+    // UI-28b:波形縮圖快取(同 session 重播不重算);失敗/逾時的 URL 記在 waveformFailed,
+    // UI 停在純進度列並標「波形不可用」,不重試、不報錯框(設計稿 v2 降級條款)。
+    public private(set) var waveforms: [URL: Waveform] = [:]
+    public private(set) var waveformFailed: Set<URL> = []
+    private var waveformInFlight: Set<URL> = []
 
     // Live mic monitor (設定裡即時收音測試)
     public var isMonitoring = false
@@ -75,10 +89,15 @@ public final class RecordingController {
 
     private var player: AVAudioPlayer?
     private var playbackTicker: Timer?
+    /// 檔案 URL → 穩定的 Recording.id(跨 loadRecordings 重掃不變)。
+    private var recordingIDs: [URL: UUID] = [:]
     private var startDate = Date()
     private var accumulated: TimeInterval = 0
     private var ticker: Timer?
     private var currentURL: URL?
+    /// 目前(或剛結束)這段錄音實際開的檔——CLI 回報路徑用(#892 後檔名可能帶後綴,
+    /// 不能再用命名規則重算)。
+    public var currentRecordingURL: URL? { currentURL }
     private var deviceListenerInstalled = false
     private let defaults = UserDefaults.standard
     // Peak levels seen this recording, to catch a dead channel live.
@@ -409,27 +428,155 @@ public final class RecordingController {
 
     // MARK: - Playback (#2)
 
+    /// 列的主鈕:沒在播 → 開播;播放中 → 暫停;已暫停 → 續播;播完(ended) → 從頭重播。
     public func togglePlay(_ rec: Recording) {
-        if playingURL == rec.url { stopPlayback(); return }
+        if playingURL == rec.url {
+            switch playbackPhase {
+            case .playing: pausePlayback()
+            case .paused: resumePlayback()
+            case .ended: restartPlayback()
+            }
+            return
+        }
         stopPlayback()
         do {
             let p = try AVAudioPlayer(contentsOf: rec.url)
+            p.isMeteringEnabled = true
+            p.prepareToPlay()
             p.play()
             player = p
             playingURL = rec.url
-            playbackTicker = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if self.player?.isPlaying != true { self.stopPlayback() }
-                }
-            }
+            playbackPhase = .playing
+            playbackTime = 0
+            playbackDuration = p.duration
+            startPlaybackTicker()
         } catch { lastError = "播放失敗:\(error)" }
+    }
+
+    /// 暫停:時間與電平都「凍結」在當下(UI-28 驗收 (b);三鏡頭審抓到原本把電平歸零);
+    /// ticker 一併停掉,不讓 10Hz Timer 在暫停期間空轉(同審)。
+    public func pausePlayback() {
+        guard let p = player, playbackPhase == .playing else { return }
+        p.pause()
+        playbackPhase = .paused
+        playbackTime = p.currentTime
+        playbackTicker?.invalidate(); playbackTicker = nil
+    }
+
+    public func resumePlayback() {
+        guard let p = player, playbackPhase == .paused else { return }
+        p.play()
+        playbackPhase = .playing
+        if playbackTicker == nil { startPlaybackTicker() }
+    }
+
+    /// 從頭播放(右鍵選單/「錄音」選單/播完後的 ↻)。
+    public func restartPlayback() {
+        guard let p = player else { return }
+        p.currentTime = 0
+        playbackTime = 0
+        if playbackPhase != .playing { p.play(); playbackPhase = .playing }
+        if playbackTicker == nil { startPlaybackTicker() }
+    }
+
+    /// 點擊/拖曳進度列。暫停中 seek 只移位置不自動續播;播完後 seek 視同重播起點。
+    public func seek(to t: TimeInterval) {
+        guard let p = player else { return }
+        let clamped = max(0, min(t, max(0, p.duration - 0.05)))
+        p.currentTime = clamped
+        playbackTime = clamped
+        if playbackPhase == .ended { p.play(); playbackPhase = .playing; if playbackTicker == nil { startPlaybackTicker() } }
+    }
+
+    /// 播放列出現時呼叫:背景算波形(utility 優先序、分段讀檔),10 秒沒算完視同失敗。
+    /// 已有/失敗中/算到一半都直接 return,冪等。
+    /// 二審(UI-28b):不能把同步的 analyze 放進 withTaskGroup 跟 sleep 賽跑——group 會
+    /// 隱含等到 analyze 真的跑完才返回,「10 秒逾時」是假的,慢碟/iCloud 佔位檔會讓
+    /// 該 URL 永遠卡在 inFlight。改成:analyze 走獨立 detached Task,逾時另開一個
+    /// Task 先標失敗;analyze 若之後還是算完了,結果照收(把「波形不可用」換回波形)。
+    public func requestWaveform(for url: URL) {
+        if waveforms[url] != nil || waveformFailed.contains(url) || waveformInFlight.contains(url) { return }
+        waveformInFlight.insert(url)
+        // UI-28c:先讀落檔快取(key 含大小+mtime,同名重錄自然失效),沒有才算、算完寫回。
+        let analyzeTask = Task.detached(priority: .utility) { () -> Waveform? in
+            if let cached = WaveformCache.load(for: url) { return cached }
+            guard let w = try? WaveformAnalyzer.analyze(url: url) else { return nil }
+            WaveformCache.save(w, for: url)
+            return w
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, self.waveformInFlight.contains(url) else { return }
+            self.waveformInFlight.remove(url)
+            self.waveformFailed.insert(url)
+        }
+        Task { @MainActor [weak self] in
+            let result = await analyzeTask.value
+            guard let self else { return }
+            let wasInFlight = self.waveformInFlight.remove(url) != nil
+            if let result {
+                self.waveforms[url] = result
+                self.waveformFailed.remove(url)      // 逾時後補算完:換回波形
+            } else if wasInFlight {
+                self.waveformFailed.insert(url)
+            }
+        }
     }
 
     public func stopPlayback() {
         player?.stop(); player = nil
         playbackTicker?.invalidate(); playbackTicker = nil
         playingURL = nil
+        playbackPhase = .playing
+        playbackTime = 0; playbackDuration = 0
+        playbackOtherLevel = 0; playbackYouLevel = 0
+    }
+
+    /// 0.1s:進度每秒至少走 10 次才不顯得卡;兩個 Float + 一個 TimeInterval 的更新,
+    /// 成本可忽略(UI-28 驗收 (d) CPU <3%)。
+    private func startPlaybackTicker() {
+        playbackTicker?.invalidate()
+        playbackTicker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.playbackTick() }
+        }
+    }
+
+    private func playbackTick() {
+        guard let p = player else { stopPlayback(); return }
+        switch playbackPhase {
+        case .paused:
+            return
+        case .ended:
+            return
+        case .playing:
+            if p.isPlaying {
+                playbackTime = p.currentTime
+                p.updateMeters()
+                // averagePower 是 dBFS(≤0);轉線性 RMS 再 ×4,與錄音路徑同標度。
+                func lin(_ ch: Int) -> Float {
+                    guard ch < p.numberOfChannels else { return 0 }
+                    let db = p.averagePower(forChannel: ch)
+                    guard db.isFinite, db > -120 else { return 0 }
+                    return min(1, powf(10, db / 20) * 4)
+                }
+                playbackOtherLevel = lin(0)
+                // 單聲道檔:右條跟左條同值,不顯示「你沒聲音」的假象。
+                playbackYouLevel = p.numberOfChannels > 1 ? lin(1) : playbackOtherLevel
+            } else {
+                // 播完(AVAudioPlayer 播到底會自己 stop)→ ended:主鈕變 ↻,
+                // 進度停在尾端,3 秒後若使用者沒動作就收回。
+                playbackPhase = .ended
+                playbackTime = p.duration
+                playbackOtherLevel = 0; playbackYouLevel = 0
+                playbackTicker?.invalidate(); playbackTicker = nil
+                let url = playingURL
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(3))
+                    guard let self, self.playingURL == url, self.playbackPhase == .ended else { return }
+                    self.stopPlayback()
+                }
+            }
+        }
     }
 
     // MARK: - Live mic monitor for the sensitivity test (#5)
@@ -476,7 +623,11 @@ public final class RecordingController {
         stopPlayback()
         let date = Date()
         let title = currentTitle.isEmpty ? "錄音" : currentTitle
-        let url = recordingsDir.appendingPathComponent(Recording.fileName(date: date, title: title))
+        // #892:同分鐘同標題不再覆蓋——探測到同 stem 既有檔就加「 2」「 3」後綴。
+        let url = recordingsDir.appendingPathComponent(
+            Recording.uniqueFileName(date: date, title: title, in: recordingsDir))
+        // UI-28b 二審:保險再踢一次該 URL 的波形快取(理論上已不會撞名)。
+        waveforms.removeValue(forKey: url); waveformFailed.remove(url); waveformInFlight.remove(url)
         currentURL = url
 
         liveTranscript = []
@@ -565,8 +716,10 @@ public final class RecordingController {
         otherLevel = 0; youLevel = 0
 
         if let url = currentURL {
-            let rec = Recording(id: UUID(),
-                                title: currentTitle.isEmpty ? "錄音" : currentTitle,
+            // 標題用檔名主幹(含日期時間、可能帶「 2」後綴),與 loadRecordings 重掃後一致——
+            // 原本只放「錄音」,列表同時出現「錄音」與「2026-08-23 2228 錄音」兩種寫法。
+            let rec = Recording(id: recordingIDs[url] ?? UUID(),
+                                title: url.deletingPathExtension().lastPathComponent,
                                 url: url, date: startDate, duration: accumulated,
                                 hasTranscript: false,
                                 isConverting: url.pathExtension == "caf")
@@ -592,6 +745,7 @@ public final class RecordingController {
         if frames < 2_400 {   // < ~0.05s @ 48k = an accidental start→stop, no content
             try? FileManager.default.removeItem(at: caf)
             recordings.removeAll { $0.id == rec.id }
+            transcribeQueued.remove(rec.id)
             return
         }
         let m4a = caf.deletingPathExtension().appendingPathExtension("m4a")
@@ -626,12 +780,15 @@ public final class RecordingController {
                 // Phase C(TR-19):剛錄完的檔自動跑高精度重轉(僅 Whisper 引擎可用
                 // 且來自「停止錄音」路徑——resumePendingConversions 不觸發,避免
                 // 每次啟動無預警吃 CPU)。
-                if autoTranscribe, whisperEngine != nil,
+                // 轉檔中按過 ⌘T 的 → 現在補跑(與自動高精度二擇一,同一筆不跑兩次)。
+                let queued = transcribeQueued.remove(rec.id) != nil
+                if (queued || (autoTranscribe && whisperEngine != nil)),
                    let i = recordings.firstIndex(where: { $0.id == rec.id }) {
                     transcribe(recordings[i])
                 }
             } catch {
                 lastError = "轉 m4a 失敗:\(error)"
+                transcribeQueued.remove(rec.id)
                 if let i = recordings.firstIndex(where: { $0.id == rec.id }) {
                     recordings[i].isConverting = false
                 }
@@ -656,8 +813,19 @@ public final class RecordingController {
 
     // MARK: - Per-recording actions
 
+    /// 轉檔(caf→m4a)還沒完成時就按了轉逐字稿的那幾筆——轉檔完成後自動接著轉稿。
+    /// BUG(Eric 2026-08-23 22:52 截圖):停止錄音後立刻 ⌘T,transcribe 拿到的還是 .caf,
+    /// 轉檔結束會把 caf 刪掉 → SpeechAnalyzer 讀到一半檔案消失,
+    /// `com.apple.coreaudio.avfaudio 2003334207('wht?')`。
+    public private(set) var transcribeQueued: Set<UUID> = []
+
     public func transcribe(_ rec: Recording) {
         guard !isTranscribing else { return }
+        if rec.isConverting || rec.url.pathExtension == "caf" {
+            transcribeQueued.insert(rec.id)
+            lastError = nil
+            return
+        }
         lastError = nil
         isTranscribing = true
         Task {
@@ -764,7 +932,11 @@ public final class RecordingController {
                 guard let f = try? AVAudioFile(forReading: url), f.processingFormat.sampleRate > 0 else { return 0 }
                 return Double(f.length) / f.processingFormat.sampleRate
             }()
-            return Recording(id: UUID(), title: url.deletingPathExtension().lastPathComponent,
+            // UI-27 三鏡頭審:每次重掃都 mint 新 UUID 會讓 ForEach 把列當成新物件、
+            // 丟掉列內 @State(拖曳中的 seek 位置);同一 URL 沿用同一個 id。
+            let stableID = recordingIDs[url] ?? UUID()
+            recordingIDs[url] = stableID
+            return Recording(id: stableID, title: url.deletingPathExtension().lastPathComponent,
                              url: url, date: date, duration: duration,
                              hasTranscript: FileManager.default.fileExists(atPath: txt.path),
                              isConverting: url.pathExtension == "caf")

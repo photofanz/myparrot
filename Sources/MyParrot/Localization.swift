@@ -45,6 +45,19 @@ final class Localizer {
         }
     }
 
+    /// BCP-47 identifier of the resolved UI language — for Foundation formatters
+    /// (DateComponentsFormatter 等) that need a Locale, not a table lookup.
+    var localeIdentifier: String {
+        switch resolved {
+        case .en: return "en"
+        case .zhTW: return "zh-Hant"
+        case .ja: return "ja"
+        case .ko: return "ko"
+        case .zhCN: return "zh-Hans"
+        case .system: return "en"
+        }
+    }
+
     /// Keys are the 繁中 strings already in the views, so `.zhTW` returns the key.
     func t(_ key: String) -> String {
         let lang = resolved
@@ -53,7 +66,12 @@ final class Localizer {
     }
 
     private static let table: [String: [AppLanguage: String]] = [
-        "迷你模式": [.en: "Mini Mode", .ja: "ミニモード", .ko: "미니 모드", .zhCN: "迷你模式"],
+        // 二審 Finding 8(zh-lint-skip:承接既有翻譯表慣例,.ja/.zhCN 欄為刻意的
+        // 日文/簡體原文)。原「迷你模式」key 的舊呼叫點(舊 miniMode 切換鈕)已被
+        // 本輪 UI-25 三態 windowMode.cycle() 鈕取代,整個專案已無呼叫點——孤兒
+        // key,清掉(不影響 check-translations,它只檢查「用了但缺翻譯」,不檢查
+        // 反向;⚠️ 這裡故意不把那個 key 名字寫成 L 加引號的樣子,script 的掃描器
+        // 不分辨註解與程式碼,寫成那樣會被誤判成新的使用點)。
         "設定": [.en: "Settings", .ja: "設定", .ko: "설정", .zhCN: "设置"],
         "完成": [.en: "Done", .ja: "完了", .ko: "완료", .zhCN: "完成"],
         "待錄音": [.en: "Ready", .ja: "待機中", .ko: "대기 중", .zhCN: "待录音"],
@@ -65,6 +83,18 @@ final class Localizer {
         "會議名稱": [.en: "Meeting name", .ja: "会議名", .ko: "회의 이름", .zhCN: "会议名称"],
         "開始錄音": [.en: "Record", .ja: "録音開始", .ko: "녹음 시작", .zhCN: "开始录音"],
         "暫停": [.en: "Pause", .ja: "一時停止", .ko: "일시정지", .zhCN: "暂停"],
+        // UI-27/28 播放(2026-08-23)
+        "播放": [.en: "Play", .ja: "再生", .ko: "재생", .zhCN: "播放"],
+        "重播": [.en: "Replay", .ja: "もう一度再生", .ko: "다시 재생", .zhCN: "重播"],
+        "從頭播放": [.en: "Play from Start", .ja: "最初から再生", .ko: "처음부터 재생", .zhCN: "从头播放"],
+        "停止播放": [.en: "Stop Playback", .ja: "再生を停止", .ko: "재생 중지", .zhCN: "停止播放"],
+        "播放進度": [.en: "Playback position", .ja: "再生位置", .ko: "재생 위치", .zhCN: "播放进度"],
+        "波形不可用": [.en: "No waveform", .ja: "波形なし", .ko: "파형 없음", .zhCN: "波形不可用"],
+        "打開逐字稿": [.en: "Open Transcript", .ja: "文字起こしを開く", .ko: "받아쓰기 열기", .zhCN: "打开逐字稿"],
+        "轉檔中,完成後自動轉逐字稿…": [.en: "Converting — will transcribe when done…", .ja: "変換中 — 完了後に文字起こしします…", .ko: "변환 중 — 완료 후 받아쓰기합니다…", .zhCN: "转档中,完成后自动转写…"],
+        "重新轉逐字稿": [.en: "Re-transcribe", .ja: "再文字起こし", .ko: "다시 받아쓰기", .zhCN: "重新转写"],
+        // VoiceOver 進度值模板(三鏡頭審:連接詞拆開翻成 en "of" 塞進固定模板會破句)。
+        "已播 %@,共 %@": [.en: "%@ played of %@", .ja: "%@ 再生済み、全体 %@", .ko: "%@ 재생됨, 전체 %@", .zhCN: "已播 %@,共 %@"],
         "繼續": [.en: "Resume", .ja: "再開", .ko: "계속", .zhCN: "继续"],
         "結束": [.en: "Stop", .ja: "終了", .ko: "종료", .zhCN: "结束"],
         "新錄音": [.en: "New", .ja: "新規録音", .ko: "새 녹음", .zhCN: "新录音"],
@@ -174,6 +204,34 @@ final class Localizer {
             .ja: "録音停止後に Whisper で高精度に再文字起こしします。ライブ字幕は会議中の参考用です。",
             .ko: "녹음 정지 후 Whisper로 고정밀 재전사합니다. 실시간 자막은 참고용입니다.",
             .zhCN: "录音停止后用 Whisper 高精度重转一次;实时稿仅供会中参考。"],
+        // UPD 自動更新檢查(zh-lint-skip:.ja/.zhCN 欄為刻意的日文/簡體譯文,比照既有翻譯表慣例)
+        "軟體更新": [.en: "Software Update", .ja: "ソフトウェアアップデート", .ko: "소프트웨어 업데이트", .zhCN: "软件更新"],
+        "啟動時自動檢查更新": [.en: "Check for updates at launch", .ja: "起動時にアップデートを確認", .ko: "실행 시 업데이트 확인", .zhCN: "启动时自动检查更新"],
+        "立即檢查": [.en: "Check Now", .ja: "今すぐ確認", .ko: "지금 확인", .zhCN: "立即检查"],
+        "檢查中…": [.en: "Checking…", .ja: "確認中…", .ko: "확인 중…", .zhCN: "检查中…"],
+        "已是最新版本": [.en: "Up to date", .ja: "最新バージョンです", .ko: "최신 버전입니다", .zhCN: "已是最新版本"],
+        "檢查失敗": [.en: "Check failed", .ja: "確認に失敗しました", .ko: "확인 실패", .zhCN: "检查失败"],
+        "有新版本": [.en: "New version available:", .ja: "新しいバージョン:", .ko: "새 버전:", .zhCN: "有新版本"],
+        "前往下載": [.en: "Download", .ja: "ダウンロード", .ko: "다운로드", .zhCN: "前往下载"],
+        "略過此版": [.en: "Skip This Version", .ja: "このバージョンをスキップ", .ko: "이 버전 건너뛰기", .zhCN: "跳过此版本"],
+        "目前版本": [.en: "Current version", .ja: "現在のバージョン", .ko: "현재 버전", .zhCN: "当前版本"],
+        "檢查更新…": [.en: "Check for Updates…", .ja: "アップデートを確認…", .ko: "업데이트 확인…", .zhCN: "检查更新…"],
+        // UI-24/25:快捷鍵選單(App menu「設定…」/「錄音」/「顯示方式」)+三態模式命名
+        // (zh-lint-skip:.ja/.zhCN 欄為刻意的日文/簡體譯文,比照既有翻譯表慣例)。
+        "設定…": [.en: "Settings…", .ja: "設定…", .ko: "설정…", .zhCN: "设置…"],
+        // 二審 Finding 3 修正後「暫停」/「繼續」改用既有 key 動態組字(見
+        // AppCommands),這顆固定字串「暫停／繼續」不再有呼叫點,一併清掉
+        // (zh-lint-skip:上下相鄰行的 .ja/.zhCN 欄為既有翻譯表刻意的日文/簡體
+        // 原文,非本次改動)。
+        "結束錄音": [.en: "Stop Recording", .ja: "録音終了", .ko: "녹음 종료", .zhCN: "结束录音"],
+        "顯示方式": [.en: "View", .ja: "表示", .ko: "보기", .zhCN: "显示方式"],
+        "切換模式": [.en: "Switch Mode", .ja: "モード切替", .ko: "모드 전환", .zhCN: "切换模式"],
+        "逐字稿 3 分鐘／完整": [.en: "Transcript: 3 min / Full", .ja: "文字起こし:3分／全文", .ko: "받아쓰기: 3분/전체", .zhCN: "字幕:3 分钟／完整"],
+        "收折最近錄音": [.en: "Collapse Recent Recordings", .ja: "最近の録音を折りたたむ", .ko: "최근 녹음 접기", .zhCN: "折叠最近录音"],
+        "展開最近錄音": [.en: "Expand Recent Recordings", .ja: "最近の録音を展開", .ko: "최근 녹음 펼치기", .zhCN: "展开最近录音"],
+        "標準視窗": [.en: "Standard Window", .ja: "標準ウィンドウ", .ko: "표준 창", .zhCN: "标准窗口"],
+        "窄版視窗": [.en: "Compact Window", .ja: "コンパクトウィンドウ", .ko: "축소 창", .zhCN: "窄版窗口"],
+        "迷你控制列": [.en: "Mini Bar", .ja: "ミニバー", .ko: "미니 바", .zhCN: "迷你控制栏"],
     ]
 }
 
