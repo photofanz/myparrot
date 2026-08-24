@@ -36,7 +36,8 @@ public enum SelfTest {
             waveformBuckets(),
             waveformCacheRoundTrip(),
             uniqueFileNameProbe(),
-            meterScaleMapping()
+            meterScaleMapping(),
+            titleSanitize()
         ]
     }
 
@@ -574,6 +575,21 @@ public enum SelfTest {
         return Result(name: "電平表 dB 刻度(−50…−12 dBFS)", passed: ok,
                       detail: String(format: "speech=%.2f seg20=%d seg8=%d floor=%@ top=%@ mono=%@", speech, seg20, seg8,
                                      floor ? "ok" : "x", top ? "ok" : "x", monotone ? "ok" : "x"))
+    }
+
+    // v0.3.1:標題去路徑語意——`/` `:` → `-`、控制字元去掉、前後空白與點去掉、空 → 錄音、
+    // 長標題截在 120 bytes 且不切壞 UTF-8。
+    static func titleSanitize() -> Result {
+        let a = Recording.sanitizeTitle("會議/客戶: A") == "會議-客戶- A"
+        let b = Recording.sanitizeTitle("../../etc") == "..-..-etc".trimmingCharacters(in: CharacterSet(charactersIn: ".")) // → "-..-etc"
+        let c = Recording.sanitizeTitle("  ..  ") == "錄音"
+        let d = Recording.sanitizeTitle("a\u{0}b\tc") == "abc"
+        let long = Recording.sanitizeTitle(String(repeating: "繁", count: 60))   // 180 bytes → 截到 ≤120
+        let e = long.utf8.count <= 120 && long.utf8.count >= 118 && long.allSatisfy { $0 == "繁" }
+        let f = Recording.fileName(date: Date(), title: "x/y").hasSuffix(" x-y.caf")
+        let ok = a && b && c && d && e && f
+        return Result(name: "標題去路徑語意(/ : .. 控制字元/長度)", passed: ok,
+                      detail: "a=\(a) b=\(b) c=\(c) d=\(d) e=\(e) f=\(f)")
     }
 
     private static func makeMono(_ sampleRate: Double, _ frames: Int, _ value: Float) -> AVAudioPCMBuffer {

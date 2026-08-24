@@ -37,4 +37,5 @@ struct SelfTestCases {
     @Test("UI-28c 波形快取落檔(round-trip/失效/損毀)") func waveformCache() { check(SelfTest.waveformCacheRoundTrip()) }
     @Test("REC-02b 同分鐘同標題防覆蓋(後綴 2/3)") func uniqueFileName() { check(SelfTest.uniqueFileNameProbe()) }
     @Test("UI-29 電平表 dB 刻度(−50…−12 dBFS,三處同刻度)") func meterScale() { check(SelfTest.meterScaleMapping()) }
+    @Test("REC-02c 標題去路徑語意") func titleSanitize() { check(SelfTest.titleSanitize()) }
 }

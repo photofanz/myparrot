@@ -35,7 +35,9 @@ struct MiniView: View {
             default:
                 iconBtn("record.circle", label: L("開始錄音"), shortcut: "⌘R") { controller.startRecording() }
             }
+            // v0.3.0 二審:錄音/暫停中也能按「新錄音」→ 與選單 finished-only 規則不一致。
             iconBtn("plus", label: L("新錄音")) { controller.newRecording() }
+                .disabled(controller.state != .finished)
             // 「展開」= 回標準視窗,跟按 ⌘1 從迷你往下一態走是同一個 cycle() 動作
             // (定稿:迷你「展開」=回①,不是額外一個獨立按鈕)。
             iconBtn(windowMode.mode.icon, label: L("切換模式"), shortcut: "⌘1") { windowMode.cycle() }
@@ -44,13 +46,15 @@ struct MiniView: View {
         .frame(minWidth: 300)
     }
 
+    // UI-29 補漏(Eric 2026-08-24 06:07 抓):迷你模式當初漏套 MeterScale,還在線性
+    // 標度(語音只到 ~16% 像沒聲音);與主畫面/播放列/設定頁同一 dB 刻度。
     private func miniMeter(_ v: Float, _ c: Color, live: Bool = false, ok: Bool = false) -> some View {
         HStack(spacing: MP.spXS) {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.15))
                     RoundedRectangle(cornerRadius: 3).fill(c)
-                        .frame(width: max(1, geo.size.width * CGFloat(min(1, v))))
+                        .frame(width: max(1, geo.size.width * CGFloat(MeterScale.fraction(v))))
                 }
             }.frame(height: 5)
             if live {

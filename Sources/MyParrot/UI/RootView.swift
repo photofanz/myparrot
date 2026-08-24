@@ -280,7 +280,8 @@ struct RootView: View {
             if uiState.listExpanded {
                 ScrollView {
                     VStack(alignment: .leading, spacing: MP.spS) {
-                        ForEach(controller.recordings.prefix(10)) { rec in
+                        // 2026-08-24 Eric:列表 10 → 20 筆(更早的照舊用「在 Finder 打開」)。
+                        ForEach(controller.recordings.prefix(20)) { rec in
                             RecordingRow(rec: rec, controller: controller)
                         }
                         if controller.recordings.isEmpty {
@@ -314,12 +315,8 @@ struct RootView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: MP.spM) {
-                        if controller.isTranscribing {
-                            Text(L("轉逐字稿中…")).font(MPFont.label).foregroundStyle(.secondary)
-                        } else if !controller.transcribeQueued.isEmpty {
-                            // 轉檔中按了轉逐字稿 → 排隊,轉檔完自動接著跑(不再讀到被刪的 .caf)。
-                            Text(L("轉檔中,完成後自動轉逐字稿…")).font(MPFont.label).foregroundStyle(.secondary)
-                        }
+                        // UI-33(Eric 2026-08-24):「轉逐字稿中/轉檔中」狀態改顯示在
+                        // 錄音列表對應列上(訊息跟著主體),不再放這裡。
                         ForEach(visibleTranscript) { line in
                             TranscriptBubble(line: line)
                         }
@@ -411,21 +408,28 @@ struct RootView: View {
     // UI-22: build stamp 移去 SettingsView 底部(item 9),adBar 只剩 🦜+連結一行,
     //       VStack 兩行結構不再需要。
     private var adBar: some View {
-        HStack(alignment: .firstTextBaseline, spacing: MP.spS) {
-            Text("🦜").font(MPFont.caption)
+        HStack(alignment: .center, spacing: MP.spS) {
+            // UI-33(Eric 2026-08-24 06:06):🦜 emoji → 吉祥物迷你版;06:32 改用大頭圖
+            // (全身縮 16pt 糊成一團,大頭才辨識得出);缺檔回落 idle 幀→emoji。
+            if let head = ParrotMascot.headIcon ?? ParrotMascot.pngFrames?.idle {
+                Image(nsImage: head).resizable().interpolation(.high)
+                    .scaledToFit().frame(width: 16, height: 16)
+            } else {
+                Text("🦜").font(MPFont.caption)
+            }
             ViewThatFits(in: .horizontal) {
                 adLink("大叔的筆 — uncleric.com")
                 adLink("大叔的筆")
             }
             Spacer(minLength: 0)
             // 2026-08-23 Eric:build no 回到 footer(官網連結變短後放得下);窄版自動縮成短 hash、再不夠就省略。
+            // UI-33b(Eric 2026-08-24 06:33):build no 改為連到 GitHub repo(取代原本的可選取複製)。
             ViewThatFits(in: .horizontal) {
-                Text(buildStamp)
-                Text(buildStamp.split(separator: " ").last.map(String.init) ?? "")
+                buildLink(buildStamp)
+                buildLink(buildStamp.split(separator: " ").last.map(String.init) ?? "")
                 Text("")
             }
-            .font(MPFont.caption).foregroundStyle(.tertiary).lineLimit(1)
-            .textSelection(.enabled)
+            .font(MPFont.caption).lineLimit(1)
         }
         .padding(.horizontal, MP.spL).padding(.vertical, MP.spS)
         .padding(.trailing, 58 + 8)  // = mascot 58 + inset 8
@@ -438,8 +442,21 @@ struct RootView: View {
     // 2026-08-17: LinkedIn → 官網(Eric:不再幫 LinkedIn 導流)。
     private func adLink(_ label: String) -> some View {
         Link(destination: URL(string: "https://www.uncleric.com/")!) {
-            Text(label).font(MPFont.caption).lineLimit(1)
+            // UI-33:底線+↗,一眼看得出可以按(Eric 2026-08-24 06:06:「不那麼直覺
+            // 知道可以按」)。
+            Text("\(label) ↗").font(MPFont.caption).underline().lineLimit(1)
         }
+        // UI-33c(Eric 2026-08-24 08:52):SwiftUI Link 在 macOS 不自動給手型,補 pointerStyle。
+        .pointerStyle(.link)
+    }
+
+    /// UI-33b:footer build no → GitHub repo;維持 tertiary 低調,hover 出 tooltip。
+    private func buildLink(_ label: String) -> some View {
+        Link(destination: URL(string: "https://github.com/tingyulu/MyParrot")!) {
+            Text(label).font(MPFont.caption).foregroundStyle(.tertiary)
+        }
+        .pointerStyle(.link)   // UI-33c:同上,hover 手型
+        .help(L("在 GitHub 上打開 MyParrot"))
     }
 
     private var stateLabel: String {
@@ -526,9 +543,14 @@ struct RecordingRow: View {
     @State private var isHovering = false
     /// 這一列是不是「使用中的播放器」(播放中/暫停中/播完待收回都算)。
     private var isActive: Bool { controller.playingURL == rec.url }
-    // 副標：處理中… / [時長 · ]雙聲道[ · 已轉稿]
+    // 副標：轉稿/轉檔狀態就地顯示(UI-33) / [時長 · ]雙聲道[ · 已轉稿]
     private var subtitle: String {
-        if rec.isConverting { return L("處理中…") }
+        if controller.transcribingID == rec.id { return L("轉逐字稿中…") }
+        if rec.isConverting {
+            return controller.transcribeQueued.contains(rec.id)
+                ? L("轉檔中,完成後自動轉逐字稿…") : L("處理中…")
+        }
+        if controller.transcribeQueued.contains(rec.id) { return L("已排隊,稍後轉逐字稿…") }
         let kind = L(rec.hasTranscript ? "雙聲道 · 已轉稿" : "雙聲道")
         // UI-28b 降級:波形算失敗/逾時 → 副標尾端標示,不報錯框。
         let tail = (isActive && controller.waveformFailed.contains(rec.url)) ? " · \(L("波形不可用"))" : ""
@@ -593,11 +615,20 @@ struct RecordingRow: View {
                 }
                 Spacer(minLength: 0)
                 // UI-30(Eric 2026-08-23):已轉稿 → 打開 .txt;未轉稿 → 轉稿。重轉走右鍵。
+                // UI-33:這一列轉稿中 → 圖示換轉圈(狀態跟著主體)。
                 Button {
                     if rec.hasTranscript { NSWorkspace.shared.open(rec.transcriptURL) }
                     else { controller.transcribe(rec) }
-                } label: { Image(systemName: "doc.text") }
+                } label: {
+                    if controller.transcribingID == rec.id {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "doc.text")
+                    }
+                }
                     .buttonStyle(.accessoryBar).foregroundStyle(rec.hasTranscript ? Color.green : .primary)
+                    // gemini 二審:排隊中也禁(重按雖冪等,但按了沒反應=假入口)。
+                    .disabled(controller.transcribingID == rec.id || controller.transcribeQueued.contains(rec.id))
                     .help(L(rec.hasTranscript ? "打開逐字稿" : "轉逐字稿"))
                     .accessibilityLabel(L(rec.hasTranscript ? "打開逐字稿" : "轉逐字稿"))
             }

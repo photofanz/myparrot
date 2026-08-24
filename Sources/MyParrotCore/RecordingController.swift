@@ -443,7 +443,9 @@ public final class RecordingController {
             let p = try AVAudioPlayer(contentsOf: rec.url)
             p.isMeteringEnabled = true
             p.prepareToPlay()
-            p.play()
+            // 二審:play() 失敗(輸出裝置不可用等)原本照樣進 .playing,下個 tick 被當成
+            // 「播完」顯示 ↻——改成明確報錯、不進播放狀態。
+            guard p.play() else { lastError = "播放失敗:音訊輸出無法啟動"; return }
             player = p
             playingURL = rec.url
             playbackPhase = .playing
@@ -465,7 +467,7 @@ public final class RecordingController {
 
     public func resumePlayback() {
         guard let p = player, playbackPhase == .paused else { return }
-        p.play()
+        guard p.play() else { lastError = "播放失敗:音訊輸出無法啟動"; return }
         playbackPhase = .playing
         if playbackTicker == nil { startPlaybackTicker() }
     }
@@ -475,7 +477,10 @@ public final class RecordingController {
         guard let p = player else { return }
         p.currentTime = 0
         playbackTime = 0
-        if playbackPhase != .playing { p.play(); playbackPhase = .playing }
+        if playbackPhase != .playing {
+            guard p.play() else { lastError = "播放失敗:音訊輸出無法啟動"; return }
+            playbackPhase = .playing
+        }
         if playbackTicker == nil { startPlaybackTicker() }
     }
 
@@ -485,7 +490,7 @@ public final class RecordingController {
         let clamped = max(0, min(t, max(0, p.duration - 0.05)))
         p.currentTime = clamped
         playbackTime = clamped
-        if playbackPhase == .ended { p.play(); playbackPhase = .playing; if playbackTicker == nil { startPlaybackTicker() } }
+        if playbackPhase == .ended, p.play() { playbackPhase = .playing; if playbackTicker == nil { startPlaybackTicker() } }
     }
 
     /// 播放列出現時呼叫:背景算波形(utility 優先序、分段讀檔),10 秒沒算完視同失敗。
@@ -781,9 +786,11 @@ public final class RecordingController {
                 // 且來自「停止錄音」路徑——resumePendingConversions 不觸發,避免
                 // 每次啟動無預警吃 CPU)。
                 // 轉檔中按過 ⌘T 的 → 現在補跑(與自動高精度二擇一,同一筆不跑兩次)。
-                let queued = transcribeQueued.remove(rec.id) != nil
+                // 若此刻另一筆正在轉,transcribe() 會把它留在佇列、轉完再 drain。
+                let queued = transcribeQueued.contains(rec.id)
                 if (queued || (autoTranscribe && whisperEngine != nil)),
                    let i = recordings.firstIndex(where: { $0.id == rec.id }) {
+                    transcribeQueued.remove(rec.id)
                     transcribe(recordings[i])
                 }
             } catch {
@@ -818,17 +825,31 @@ public final class RecordingController {
     /// 轉檔結束會把 caf 刪掉 → SpeechAnalyzer 讀到一半檔案消失,
     /// `com.apple.coreaudio.avfaudio 2003334207('wht?')`。
     public private(set) var transcribeQueued: Set<UUID> = []
+    /// UI-33(Eric 2026-08-24):正在轉逐字稿的那一筆——列表列就地顯示狀態
+    /// (訊息跟著主體,不再放逐字稿區頂端)。
+    public private(set) var transcribingID: UUID? = nil
 
     public func transcribe(_ rec: Recording) {
-        guard !isTranscribing else { return }
-        if rec.isConverting || rec.url.pathExtension == "caf" {
+        // UI-33 二審:同一筆已在轉 → 忽略(否則會排進佇列,轉完又原樣重轉一次)。
+        guard transcribingID != rec.id else { return }
+        // 忙碌中(另一筆在轉)或檔案還在轉檔 → 排隊;轉完/轉檔完由 drainTranscribeQueue
+        // 接手(v0.3.0 GPT 二審:原本 isTranscribing 時直接 return,排隊的那筆會永久遺失)。
+        if isTranscribing || rec.isConverting || rec.url.pathExtension == "caf" {
             transcribeQueued.insert(rec.id)
             lastError = nil
             return
         }
         lastError = nil
         isTranscribing = true
+        transcribingID = rec.id
         Task {
+            // 二審(both):狀態清理集中 defer——日後任何分支提早 return 也不會留下
+            // 永久「轉稿中」;isTranscribing/transcribingID 兩份狀態永遠成對清。
+            defer {
+                isTranscribing = false
+                transcribingID = nil
+                drainTranscribeQueue()
+            }
             do {
                 let lines = try await fileTranscriber.transcribeFile(rec.url, locale: resolvedLocale)
                 liveTranscript = lines
@@ -837,7 +858,18 @@ public final class RecordingController {
             } catch {
                 lastError = "轉逐字稿失敗:\(error)"
             }
-            isTranscribing = false
+        }
+    }
+
+    /// 佇列裡第一筆「已轉檔完成」的錄音接著轉;其餘留著等各自的轉檔完成。
+    private func drainTranscribeQueue() {
+        guard !isTranscribing else { return }
+        for id in transcribeQueued {
+            if let rec = recordings.first(where: { $0.id == id }), !rec.isConverting, rec.url.pathExtension != "caf" {
+                transcribeQueued.remove(id)
+                transcribe(rec)
+                return
+            }
         }
     }
 

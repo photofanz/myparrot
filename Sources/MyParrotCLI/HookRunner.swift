@@ -8,14 +8,22 @@ import Darwin
 /// 方便 CLI-01 SelfTest 表驅動。
 enum HookRunner {
 
-    /// `{audio}/{transcript}/{name}/{dir}` 模板替換(純函式,SelfTest)。
+    /// POSIX 單引號包裹:`'` → `'\''`。命令整條交給 `/bin/sh -c`,佔位符的值(路徑/
+    /// 檔名)來自使用者可控的檔名——不包裹的話 `meeting; rm -rf ~.m4a` 這種檔名會被
+    /// 當 shell 語法執行,而 TOFU 核准的只有模板本身(v0.3.0 GPT 二審,嚴重)。
+    static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// `{audio}/{transcript}/{name}/{dir}` 模板替換(純函式,SelfTest)。每個值都經
+    /// `shellQuote`,所以模板裡佔位符**不要再自己加引號**(`tool {audio}` 即可)。
     static func substitute(_ template: String, audio: String, transcript: String?,
                             name: String, dir: String) -> String {
         template
-            .replacingOccurrences(of: "{audio}", with: audio)
-            .replacingOccurrences(of: "{transcript}", with: transcript ?? "")
-            .replacingOccurrences(of: "{name}", with: name)
-            .replacingOccurrences(of: "{dir}", with: dir)
+            .replacingOccurrences(of: "{audio}", with: shellQuote(audio))
+            .replacingOccurrences(of: "{transcript}", with: shellQuote(transcript ?? ""))
+            .replacingOccurrences(of: "{name}", with: shellQuote(name))
+            .replacingOccurrences(of: "{dir}", with: shellQuote(dir))
     }
 
     /// hook 執行環境變數(env 雙軌之一;另一軌=stdin JSON)。

@@ -237,7 +237,7 @@ enum ConfigKeyPath {
             case "cwd": spec.cwd = value
             case "timeout":
                 if value == "auto" { spec.timeout = .auto }
-                else if let n = Double(value) { spec.timeout = .seconds(n) }
+                else if let n = Double(value), n.isFinite, n >= 0 { spec.timeout = .seconds(n) }   // 二審:拒負數/NaN/Inf
                 else { throw ConfigError.invalidValue(path, value) }
             case "auto":
                 guard let b = Bool(value) else { throw ConfigError.invalidValue(path, value) }

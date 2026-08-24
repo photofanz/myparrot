@@ -30,6 +30,28 @@ cp "$BIN" "$APP/Contents/MacOS/MyParrot"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+# UI-32:吉祥物 PNG 幀(idle=閉嘴/sing=張嘴);缺任一檔=用向量 fallback,不阻擋打包。
+# 二審:白名單複製(cp -R 整個目錄會把備份檔/metadata 一起封進正式 bundle)。
+# png_ok <f> = 檔存在且可解碼(二審 both:-f 只驗存在,零位元組/損壞檔會被打包
+# 還印 embedded,執行期才靜默降級——建置期就驗,壞檔明講)。
+png_ok() { [ -f "$1" ] && sips -g pixelWidth "$1" >/dev/null 2>&1; }
+if png_ok Resources/mascot/idle.png && png_ok Resources/mascot/sing.png; then
+  mkdir -p "$APP/Contents/Resources/mascot"
+  cp Resources/mascot/idle.png Resources/mascot/sing.png "$APP/Contents/Resources/mascot/"
+  echo "▶ embedded mascot frames"
+else
+  echo "⚠️ Resources/mascot/{idle,sing}.png 缺或不可解碼 — 吉祥物走向量 fallback"
+fi
+# UI-33b footer 大頭圖:與動畫幀用途獨立,單獨打包(二審:巢在上面 if 裡會在幀缺時
+# 連帶無聲丟掉 head)。缺檔明講,不假裝完整成功。
+if png_ok Resources/mascot/head.png; then
+  mkdir -p "$APP/Contents/Resources/mascot"
+  cp Resources/mascot/head.png "$APP/Contents/Resources/mascot/"
+  echo "▶ embedded footer head icon"
+else
+  echo "⚠️ Resources/mascot/head.png 缺或不可解碼 — footer 小圖走 fallback(idle 幀→🦜)"
+fi
+
 # --- Build stamp (UI-16) ------------------------------------------------------
 # 蓋進 Info.plist(簽章前),UI 左下顯示「build MMdd-HHmm <git短hash>[*]」;
 # `*` = working tree 有未 commit 改動。讓測試一眼確認跑的是哪一版。

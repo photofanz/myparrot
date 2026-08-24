@@ -27,13 +27,16 @@ struct MyParrotApp: App {
             }
             // UI-20: 視窗最小尺寸的**單一真相**(RootView 不再自帶 frame——雙重約束
             // 取大者,曾讓 RootView 的 320 被這裡的舊 720 蓋掉而失效)。
-            // 320 = 逐字稿標題+190pt picker 的內容下限。
+            // UI-34(Eric 2026-08-24 09:05):320 → 380——狀態列「待錄音 00:00:00」+
+            // 模式/設定兩鈕單列所需寬度(真機二分實測臨界 370,+10 安全邊際);
+            // 最小寬度保證不觸發 ViewThatFits 兩列退版(退版程式保留,當非中文
+            // 語系狀態字較寬時的保險)。
             // UI-21 v4: minHeight 620——逐字稿/列表間改 VSplitView 可拖曳分隔後,
             // 內容下限=控制卡+逐字稿 pane min 140+列表 pane min 88+adBar;620 保證
             // footer 兩行完整、其餘比例使用者自己拖(不再硬寫死列表高度)。
-            // UI-25: 窄版(compact)沿用同一組 320/620——WindowModeManager 把窄版
+            // UI-25: 窄版(compact)沿用同一組 380/620——WindowModeManager 把窄版
             // 釘死在這個下限上,兩者本就該是同一個數字,不新增第三組。
-            .frame(minWidth: windowMode.mode == .mini ? 300 : 320,
+            .frame(minWidth: windowMode.mode == .mini ? 300 : 380,
                    minHeight: windowMode.mode == .mini ? 60 : 620)
             .onAppear {
                 appDelegate.controller = controller

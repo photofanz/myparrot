@@ -14,6 +14,14 @@
 <img src="docs/img/mini-mode.png" width="300" alt="懸浮迷你模式">
 </p>
 
+## 0.3.1 新東西
+
+- **全新 App 圖示與吉祥物**:現代軟萌風戴耳機鸚鵡(AI 生圖+人工迭代拍板);錄音中吉祥物**拍翅+張嘴唱歌**,系統開「減少動態效果」時自動靜止。
+- **轉稿狀態跟著錄音列**:轉逐字稿/轉檔中的狀態直接顯示在對應的錄音列上(不再藏在逐字稿區頂端),轉稿中該列按鈕變轉圈。
+- **逐字稿中文更準**:轉寫引導詞加入會議場景詞彙(錄音、逐字稿、會議記錄、摘要),「逐字稿」不再被聽成「竹子稿」這類同音錯字。
+- 介面:footer 連結有底線與手型游標、build 版號可點直達本 GitHub;迷你模式電平表改用與主畫面一致的 dB 刻度;最近錄音列表顯示 20 筆;視窗最小寬度調整為狀態列不換行的 380pt。
+- **CLI 安全修正(重要)**:hooks 佔位符(`{audio}` 等)展開時自帶 shell 引號——惡意檔名不再可能注入命令;**模板內不要再自行為佔位符加引號**。另修:hook 回報的 transcript 路徑正確透傳、選單 Ctrl-C 後終端不再殘留 raw mode、`hooks run transcribe` 套用產物驗證、timeout 拒絕非法值。
+
 ## 0.3.0 新東西
 
 - **波形＋播放進度**:播放舊錄音時,列內直接畫出雙聲道波形(上=對方、下=你),一眼看出誰在哪段講話;點波形任一處就跳過去,▶⇄❚❚ 暫停續播、播完 ↻ 重播。波形算好會快取在本機,重開 app 秒出。
@@ -82,7 +90,7 @@ myparrot transcribe "~/Documents/MyParrot/2026-08-20 1400 產品週會.m4a"
 myparrot list --json | jq .       # 給 agent/腳本:每行一個 JSON 事件,非 TTY 自動零 ANSI
 ```
 
-**Hooks** — 設定檔 `~/.config/myparrot/config.json` 的 `hooks` 段,錄音結束後自動(或手動 `myparrot hooks run`)把逐字稿交給任意命令;佔位符 `{audio}` `{transcript}` `{name}` `{dir}`,完整 metadata 走 stdin JSON。第一次要 `myparrot hooks approve`(trust-on-first-use,改了設定要重核准)。
+**Hooks** — 設定檔 `~/.config/myparrot/config.json` 的 `hooks` 段,錄音結束後自動(或手動 `myparrot hooks run`)把逐字稿交給任意命令;佔位符 `{audio}` `{transcript}` `{name}` `{dir}`,完整 metadata 走 stdin JSON。第一次要 `myparrot hooks approve`(trust-on-first-use,改了設定要重核准)。0.3.1 起佔位符展開時自帶 shell 引號,**模板內不要再自行為佔位符加引號**。
 
 ```jsonc
 {

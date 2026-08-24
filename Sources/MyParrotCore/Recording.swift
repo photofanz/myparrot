@@ -26,8 +26,19 @@ public struct Recording: Identifiable, Hashable {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HHmm"
         let stamp = f.string(from: date)
-        let safe = title.isEmpty ? "錄音" : title
+        let safe = sanitizeTitle(title)
         return "\(stamp) \(safe).caf"
+    }
+
+    /// 標題進檔名前去掉路徑語意(v0.3.0 二審:`/`、`..` 會把單一檔名變成路徑成分——
+    /// 「會議/客戶」會因中間目錄不存在而錄不起來)。`/` `:` → `-`,NUL/控制字元去掉,
+    /// 前後空白與點去掉,上限 120 bytes UTF-8 邊界截斷;清完是空的 → 「錄音」。
+    public static func sanitizeTitle(_ title: String) -> String {
+        var t = title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        t = String(String.UnicodeScalarView(t.unicodeScalars.filter { $0.properties.generalCategory != .control }))
+        t = t.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        while t.utf8.count > 120 { t.removeLast() }
+        return t.isEmpty ? "錄音" : t
     }
 
     /// 錄音/逐字稿會長出的副檔名——探測檔名衝突時全部算(#892)。
@@ -46,7 +57,7 @@ public struct Recording: Identifiable, Hashable {
         }
         guard taken(stem) else { return base }
         var n = 2
-        while taken("\(stem) \(n)") && n < 1000 { n += 1 }
+        while taken("\(stem) \(n)") { n += 1 }   // 二審:原本 n==1000 就回傳已佔用的名字
         return "\(stem) \(n).caf"
     }
 }

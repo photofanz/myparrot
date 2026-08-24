@@ -3,10 +3,13 @@ import SwiftUI
 /// MyParrot mascot — a chibi parrot wearing headphones. While recording it
 /// "sings": beak opens/closes, music notes float up, the head bobs, and
 /// sound-wave rings pulse. Idle = still.
+/// UI-32(2026-08-24):尊重系統「減少動態效果」——開啟時不啟動任何 repeatForever
+/// 動畫、藏聲波/音符,錄音狀態改由靜止姿勢與其他 UI(紅點/狀態列)傳達。
 struct ParrotMascot: View {
     var size: CGFloat = 58
     var isRecording: Bool = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bob = false
     @State private var ring = false
     @State private var sing = false
@@ -14,21 +17,78 @@ struct ParrotMascot: View {
 
     private var s: CGFloat { size }
 
+    /// UI-32:PNG 幀模式——app bundle 的 Resources/mascot/{idle,sing}.png
+    /// (idle=收翅閉嘴/sing=張翅張嘴;錄音中輪替=拍翅+唱歌,UI-33b Eric 2026-08-24 06:32)。
+    /// 沒有資產(swift run 開發模式、美術未到)回落既有向量畫法;載一次全程共用。
+    /// internal:adBar 的迷你 logo 共用(UI-33)。
+    static let pngFrames: (idle: NSImage, sing: NSImage)? = {
+        guard let res = Bundle.main.resourceURL else { return nil }
+        let dir = res.appendingPathComponent("mascot")
+        guard let idle = NSImage(contentsOf: dir.appendingPathComponent("idle.png")),
+              let sing = NSImage(contentsOf: dir.appendingPathComponent("sing.png")) else { return nil }
+        return (idle, sing)
+    }()
+
+    /// UI-33b:footer 用的大頭小圖(與 app icon 同美術,16pt 才辨識得出;全身縮
+    /// 16pt 糊成一團)。缺檔回落 idle 幀→🦜(RootView 端處理)。
+    static let headIcon: NSImage? = {
+        guard let res = Bundle.main.resourceURL else { return nil }
+        return NSImage(contentsOf: res.appendingPathComponent("mascot/head.png"))
+    }()
+
     var body: some View {
         ZStack {
-            if isRecording { rings }
-            parrot
+            if isRecording && !reduceMotion { rings }
+            character
                 .rotationEffect(.degrees(isRecording && bob ? 3 : -3))
                 .offset(y: isRecording && bob ? -s * 0.03 : 0)
-            if isRecording { musicNotes }
+            if isRecording && !reduceMotion { musicNotes }
         }
         .frame(width: s, height: s)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) { bob = true }
-            withAnimation(.easeOut(duration: 1.7).repeatForever(autoreverses: false)) { ring = true }
-            withAnimation(.easeInOut(duration: 0.32).repeatForever(autoreverses: true)) { sing = true }
-            withAnimation(.easeIn(duration: 1.25).repeatForever(autoreverses: false)) { notes = true }
+        .onAppear { if !reduceMotion { startAnimations() } }
+        .onChange(of: reduceMotion) { _, rm in
+            if rm {
+                // 立即停:值改回靜止,且不帶動畫(中斷 repeatForever)。
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) { bob = false; ring = false; sing = false; notes = false }
+            } else {
+                startAnimations()
+            }
         }
+    }
+
+    private func startAnimations() {
+        withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) { bob = true }
+        withAnimation(.easeOut(duration: 1.7).repeatForever(autoreverses: false)) { ring = true }
+        withAnimation(.easeInOut(duration: 0.32).repeatForever(autoreverses: true)) { sing = true }
+        withAnimation(.easeIn(duration: 1.25).repeatForever(autoreverses: false)) { notes = true }
+    }
+
+    /// PNG 幀優先,無資產回落向量 parrot。
+    /// 換幀不能靠 withAnimation 的布林(布林不可插值,repeatForever 對「離散的
+    /// 圖片切換」無效——設成 true 後就停住,嘴一直張著不動;Eric 2026-08-24 06:06
+    /// 真機抓到)。改 TimelineView 定時驅動,錄音中每 0.35s 開合一次。
+    @ViewBuilder private var character: some View {
+        if let f = Self.pngFrames {
+            if isRecording && !reduceMotion {
+                TimelineView(.periodic(from: .now, by: 0.35)) { ctx in
+                    let open = Int(ctx.date.timeIntervalSinceReferenceDate / 0.35) % 2 == 0
+                    frameImage(open ? f.sing : f.idle)
+                }
+            } else {
+                frameImage(f.idle)
+            }
+        } else {
+            parrot
+        }
+    }
+
+    private func frameImage(_ img: NSImage) -> some View {
+        Image(nsImage: img)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: s, height: s)
     }
 
     // Pulsing sound-wave rings while recording.

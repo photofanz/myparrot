@@ -133,9 +133,13 @@ enum CLISelfTest {
     static func hookTemplateSubstitution() -> Result {
         let out = HookRunner.substitute("whisper-cli {audio} -o {dir} # {name} {transcript}",
                                         audio: "/a/b.m4a", transcript: "/a/b.txt", name: "週會", dir: "/a")
-        let want = "whisper-cli /a/b.m4a -o /a # 週會 /a/b.txt"
+        // v0.3.1:值一律 shell 單引號包裹(檔名 `a; rm -rf ~` 不能變 shell 語法)。
+        let want = "whisper-cli '/a/b.m4a' -o '/a' # '週會' '/a/b.txt'"
         let outNilTranscript = HookRunner.substitute("{transcript}", audio: "x", transcript: nil, name: "n", dir: "d")
-        let ok = out == want && outNilTranscript == ""
+        let injected = HookRunner.substitute("tool {audio}", audio: "/x/a; touch pwned; echo 'q'.m4a",
+                                             transcript: nil, name: "n", dir: "d")
+        let injectedOK = injected == "tool '/x/a; touch pwned; echo '\\''q'\\''.m4a'"
+        let ok = out == want && outNilTranscript == "''" && injectedOK
         return Result(name: "hook 模板替換 {audio}/{transcript}/{name}/{dir}", passed: ok, detail: ok ? "" : out)
     }
 

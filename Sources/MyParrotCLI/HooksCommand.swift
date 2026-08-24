@@ -69,8 +69,18 @@ struct HooksRunCommand: AsyncParsableCommand {
 
         let outcome = await HookRunner.execute(command: command, cwd: hook.cwd, env: env,
                                                stdinData: stdinData, timeoutSec: timeout)
-        let ok = outcome.exitCode == 0 && !outcome.timedOut && outcome.launchError == nil
-        let detail = ok ? nil : (outcome.launchError ?? "exit \(outcome.exitCode);stderr:\(outcome.stderr.prefix(200))")
+        var ok = outcome.exitCode == 0 && !outcome.timedOut && outcome.launchError == nil
+        var detail: String? = ok ? nil : (outcome.launchError ?? "exit \(outcome.exitCode);stderr:\(outcome.stderr.prefix(200))")
+        // v0.3.0 二審:手動 `hooks run transcribe` 原本只看 exit 0——沒產出逐字稿也印
+        // 「執行成功」。套用與自動路徑同一套產物驗證(檔案存在且非空,或 stdout JSON 指路)。
+        if ok, stage == "transcribe" {
+            let exists: (String) -> Bool = { p in
+                (try? FileManager.default.attributesOfItem(atPath: p)[.size] as? Int).flatMap { $0 }.map { $0 > 0 } ?? false
+            }
+            let (produced, _) = HookRunner.transcribeHookSucceeded(exitCode: outcome.exitCode, stdout: outcome.stdout,
+                                                                   expectedTxtPath: txt, fileExistsNonEmpty: exists)
+            if !produced { ok = false; detail = "hook exit 0 但沒有產出逐字稿(\(txt) 不存在或為空,stdout 也未指路)" }
+        }
         if json {
             Output.jsonEvent(["event": "hook", "stage": stage,
                               "status": ok ? "ok" : (outcome.timedOut ? "timeout" : "failed"), "detail": detail])

@@ -14,6 +14,14 @@
 <img src="docs/img/mini-mode.png" width="300" alt="Floating mini mode">
 </p>
 
+## What's new in 0.3.1
+
+- **New app icon & mascot** — modern kawaii headphone-wearing parrot; while recording the mascot **flaps its wings and sings**, and goes still when Reduce Motion is on.
+- **Transcription status on the recording row** — transcribe/convert progress now shows on the recording's own row (with a spinner), not tucked above the transcript pane.
+- **Better Chinese transcription** — the guidance prompt now includes meeting-domain vocabulary, fixing homophone errors on core terms like 逐字稿.
+- UI: footer links are underlined with a proper pointer cursor, the build number links to this GitHub repo, the mini-mode level meters use the same dB scale as the main window, the recent list shows 20 items, and the minimum window width is now 380pt so the status row never wraps.
+- **CLI security fix (important)** — hook placeholders (`{audio}` etc.) are now shell-quoted on expansion, so malicious file names can no longer inject commands; **do not add your own quotes around placeholders in templates**. Also fixed: hook-reported transcript paths are honored, Ctrl-C in menus restores the terminal, `hooks run transcribe` validates its product, and timeout rejects invalid values.
+
 ## What's new in 0.3.0
 
 - **Waveform + playback progress** — playing a past recording draws a stereo waveform right in the row (top = them, bottom = you), so you can see who spoke when; click anywhere to seek, ▶⇄❚❚ pause/resume, ↻ replay when done. Waveforms are cached locally, so they're instant after the first play.
@@ -82,7 +90,7 @@ myparrot transcribe "~/Documents/MyParrot/2026-08-20 1400 Weekly sync.m4a"
 myparrot list --json | jq .       # for agents/scripts: one JSON event per line, zero ANSI when not a TTY
 ```
 
-**Hooks** — the `hooks` section of `~/.config/myparrot/config.json` hands the transcript to any command after a recording ends (automatically, or on demand via `myparrot hooks run`). Placeholders `{audio}` `{transcript}` `{name}` `{dir}`; full metadata arrives as JSON on stdin. Approve once with `myparrot hooks approve` (trust-on-first-use; re-approve after edits).
+**Hooks** — the `hooks` section of `~/.config/myparrot/config.json` hands the transcript to any command after a recording ends (automatically, or on demand via `myparrot hooks run`). Placeholders `{audio}` `{transcript}` `{name}` `{dir}`; full metadata arrives as JSON on stdin. Approve once with `myparrot hooks approve` (trust-on-first-use; re-approve after edits). Since 0.3.1 placeholders are shell-quoted on expansion — **do not add your own quotes around placeholders**.
 
 ```jsonc
 {

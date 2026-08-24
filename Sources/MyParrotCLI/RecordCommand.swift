@@ -507,14 +507,16 @@ final class RecordSession {
             }
             let outcome = await runHookProcess(stage: "transcribe", hook: hook, rec: rec, transcript: nil, config: config)
             let audioDurationSec = controller.elapsed
-            let (ok, _) = HookRunner.transcribeHookSucceeded(
+            let (ok, reportedPath) = HookRunner.transcribeHookSucceeded(
                 exitCode: outcome.exitCode, stdout: outcome.stdout, expectedTxtPath: expectedTxt,
                 fileExistsNonEmpty: fileExistsNonEmpty)
             _ = audioDurationSec
             if ok {
                 if jsonMode { Output.jsonEvent(["event": "hook", "stage": "transcribe", "status": "ok", "detail": nil]) }
                 let srt = fileExistsNonEmpty(expectedSrt) ? expectedSrt : nil
-                return (expectedTxt, srt, "hook")
+                // hook 以 stdout JSON 指到別的路徑時要沿用(v0.3.0 二審:原本丟掉回傳值、
+                // 固定回 {base}.txt → 輸出與 minutes hook 都拿到不存在的檔)。
+                return (reportedPath ?? expectedTxt, srt, "hook")
             }
             let detail = outcome.launchError ?? (outcome.timedOut ? "逾時" : "exit \(outcome.exitCode);stderr:\(outcome.stderr.prefix(200))")
             if hook.strict {

@@ -146,7 +146,10 @@ struct SettingsView: View {
         // (焦點留在主視窗輸入框)→ 改掛 NSEvent 本地監聽,sheet 存在期間 keyCode 53 即 dismiss。
         .onAppear {
             escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.keyCode == 53 else { return event }
+                guard event.keyCode == 53, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return event }
+                // v0.3.0 二審:輸入法組字中(marked text)的 Esc 是「取消組字」,不該整張關掉;
+                // 帶修飾鍵的 Esc 也放行給控制項。
+                if let tv = event.window?.firstResponder as? NSTextView, tv.hasMarkedText() { return event }
                 dismiss(); return nil
             }
         }

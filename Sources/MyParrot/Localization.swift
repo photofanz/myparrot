@@ -112,6 +112,10 @@ final class Localizer {
         "3 分鐘": [.en: "3 min", .ja: "3分", .ko: "3분", .zhCN: "3 分钟"],
         "完整": [.en: "Full", .ja: "全文", .ko: "전체", .zhCN: "完整"],
         "轉逐字稿中…": [.en: "Transcribing…", .ja: "文字起こし中…", .ko: "변환 중…", .zhCN: "转写中…"],
+        // UI-33 列上排隊狀態(zh-lint-skip:.ja/.zhCN 欄為刻意的日文/簡體譯文,比照既有翻譯表慣例)
+        "已排隊,稍後轉逐字稿…": [.en: "Queued — will transcribe shortly…", .ja: "待機中 — まもなく文字起こし…", .ko: "대기 중 — 곧 변환합니다…", .zhCN: "已排队,稍后转写…"],
+        // UI-33b footer build no 連 GitHub(zh-lint-skip:.ja/.zhCN 欄為刻意的日文/簡體譯文)
+        "在 GitHub 上打開 MyParrot": [.en: "Open MyParrot on GitHub", .ja: "GitHub で MyParrot を開く", .ko: "GitHub에서 MyParrot 열기", .zhCN: "在 GitHub 上打开 MyParrot"],
         "開始錄音後,逐字稿會即時顯示在這裡;或對任一錄音檔按「轉逐字稿」。": [
             .en: "Transcript appears here while recording — or press Transcribe on any recording.",
             .ja: "録音中はここに文字起こしが表示されます。録音を選んで「文字起こし」も可能。",

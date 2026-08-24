@@ -40,12 +40,42 @@ enum RawMode {
             raw[Int(VTIME)] = 0
         }
         guard tcsetattr(STDIN_FILENO, TCSANOW, &newt) == 0 else { return nil }
+        installSignalRestore(oldt)
         return oldt
     }
 
     static func restore(_ saved: termios) {
         var t = saved
         tcsetattr(STDIN_FILENO, TCSANOW, &t)
+        uninstallSignalRestore()
+    }
+
+    // v0.3.0 GPT 二審(高):選單的 raw mode 只靠 `defer` 還原——Ctrl-C 走預設 SIGINT
+    // 直接終止進程,defer 不會跑,shell 留在無 echo/非 canonical 狀態。這裡在
+    // enableBlocking 期間掛一個 async-signal-safe 的 handler:先 tcsetattr 還原、
+    // 再用預設動作重送同一個訊號(離開碼語意不變)。錄音畫面另有自己的 SIGINT
+    // DispatchSource,不走這裡。
+    nonisolated(unsafe) private static var originalForSignal = termios()
+    nonisolated(unsafe) private static var signalRestoreInstalled = false
+    private static func installSignalRestore(_ saved: termios) {
+        originalForSignal = saved
+        signalRestoreInstalled = true
+        let handler: @convention(c) (Int32) -> Void = { sig in
+            var t = RawMode.originalForSignal
+            tcsetattr(STDIN_FILENO, TCSANOW, &t)
+            signal(sig, SIG_DFL)
+            raise(sig)
+        }
+        signal(SIGINT, handler)
+        signal(SIGTERM, handler)
+        signal(SIGHUP, handler)
+    }
+    private static func uninstallSignalRestore() {
+        guard signalRestoreInstalled else { return }
+        signalRestoreInstalled = false
+        signal(SIGINT, SIG_DFL)
+        signal(SIGTERM, SIG_DFL)
+        signal(SIGHUP, SIG_DFL)
     }
 
     /// 非阻塞讀一個字元;沒有輸入回傳 nil。呼叫端要先 `enable()` 過。

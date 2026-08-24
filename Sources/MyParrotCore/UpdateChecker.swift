@@ -86,6 +86,7 @@ public final class UpdateChecker {
             status = .upToDate
             return
         }
+        guard Self.isTrustedReleaseURL(release.htmlURL) else { status = .upToDate; return }
         status = .updateAvailable(version: remoteVersion, url: release.htmlURL)
     }
 
@@ -95,7 +96,8 @@ public final class UpdateChecker {
         guard let local = Self.currentVersion else { status = .failed; return }
         guard let release = await fetchLatestRelease() else { status = .failed; return }
         guard let newer = isNewer(remoteTag: release.tagName, localVersion: local) else { status = .failed; return }
-        status = newer ? .updateAvailable(version: stripVPrefix(release.tagName), url: release.htmlURL) : .upToDate
+        status = (newer && Self.isTrustedReleaseURL(release.htmlURL))
+            ? .updateAvailable(version: stripVPrefix(release.tagName), url: release.htmlURL) : .upToDate
     }
 
     /// banner〔略過此版〕:存 skippedVersion=目前 updateAvailable 的 version,status→.upToDate。
@@ -128,5 +130,11 @@ public final class UpdateChecker {
             print("[UPD] check failed: \(error)")
             return nil
         }
+    }
+
+    /// v0.3.0 二審:回應裡的 html_url 會直接交給 NSWorkspace.open——只接受 https 且
+    /// 是本專案 GitHub 頁面,免得被污染的回應打開任意 URL scheme。
+    static func isTrustedReleaseURL(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host == "github.com" && url.path.hasPrefix("/tingyulu/MyParrot/")
     }
 }

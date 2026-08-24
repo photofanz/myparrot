@@ -4,7 +4,7 @@ import Observation
 /// UI-25: the three window modes ⌘1 cycles through.
 enum WindowMode: String, Sendable {
     case standard   // 標準視窗(記住 frame)
-    case compact    // 窄版視窗(320×620,左上角錨定)
+    case compact    // 窄版視窗(380×620,左上角錨定;UI-34 320→380 配合單列狀態列)
     case mini       // 迷你控制列
 
     var icon: String {
@@ -55,7 +55,7 @@ enum WindowMode: String, Sendable {
 final class WindowModeManager {
     private static let modeKey = "windowMode"
     private static let frameKey = "windowFrame.standard"
-    private static let compactSize = NSSize(width: 320, height: 620)
+    private static let compactSize = NSSize(width: 380, height: 620)
 
     var mode: WindowMode
 
@@ -91,15 +91,16 @@ final class WindowModeManager {
 
     /// ⌘1 / the mode-toggle button: standard → compact → mini → standard.
     func cycle() {
-        let window = currentWindow()
+        // v0.3.0 二審:找不到視窗就不要動 mode/UserDefaults(原本先改狀態再 return,
+        // 畫面與幾何不一致且重啟後還記成新模式)。
+        guard let window = currentWindow() else { return }
         // 離開 standard 時存 frame——僅在「主動切走」這一刻存,不隨時監聽
         // resize(否則使用者把視窗拖去填滿螢幕、卻從未切模式,下次啟動會把
         // 那個填滿的 frame 誤存成「自存好的大小」,重演 12:27 那個 bug)。
-        if mode == .standard, let window { saveStandardFrame(window.frame) }
+        if mode == .standard { saveStandardFrame(window.frame) }
         let target = mode.next
         mode = target
         UserDefaults.standard.set(target.rawValue, forKey: Self.modeKey)
-        guard let window else { return }
         switch target {
         case .standard:
             if let frame = savedStandardFrame() { window.setFrame(frame, display: true) }
@@ -110,7 +111,7 @@ final class WindowModeManager {
         }
     }
 
-    /// 320×620,保持左上角不動(高度變小/變大都從底部伸縮)。
+    /// 380×620,保持左上角不動(高度變小/變大都從底部伸縮)。
     private func applyCompactFrame(to window: NSWindow) {
         let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
         var frame = NSRect(origin: .zero, size: Self.compactSize)
