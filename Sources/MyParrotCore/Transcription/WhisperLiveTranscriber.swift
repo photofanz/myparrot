@@ -8,6 +8,20 @@ import os
 struct VadChunker {
     struct Chunk { let samples: [Float]; let startOffset: Int }   // offset=絕對樣本數
 
+    /// 切塊參數(TR-28,#2485):live 段落式準即時(6 s)與會後重轉(25 s)共用同一個切塊器,
+    /// 只差門檻。file profile 塊長取 whisper 原生 30 秒窗以內、尾靜音放寬到 0.8 s 少切斷句。
+    struct Profile: Sendable {
+        let silenceCut: Int                  // 尾靜音達此樣本數 → 切
+        let maxChunk: Int                    // 塊滿此樣本數 → 強制切
+        let minVoiced: Int                   // 有聲跨度不足 → 丟
+        let idleDrop: Int                    // 全靜音達此樣本數 → 丟
+        static let live = Profile(silenceCut: 9_600, maxChunk: 96_000, minVoiced: 8_000, idleDrop: 48_000)
+        static let file = Profile(silenceCut: 12_800, maxChunk: 400_000, minVoiced: 8_000, idleDrop: 48_000)
+    }
+
+    let profile: Profile
+    init(profile: Profile = .live) { self.profile = profile }
+
     private(set) var samples: [Float] = []
     private(set) var consumed = 0            // samples[0] 的絕對樣本偏移
     private var firstVoice = -1              // 絕對樣本索引(-1=本塊尚無聲)
@@ -15,10 +29,10 @@ struct VadChunker {
 
     static let rate = 16_000
     static let voiceRMS: Float = 0.012       // 10ms 塊 RMS 門檻
-    static let silenceCut = 9_600            // 0.6s 尾靜音 → 切
-    static let maxChunk = 96_000             // 6s 強制切
-    static let minVoiced = 8_000             // 有聲跨度 ≥0.5s 才值得轉
-    static let idleDrop = 48_000             // 3s 全靜音 → 丟
+    static let silenceCut = Profile.live.silenceCut   // 0.6s 尾靜音 → 切(live)
+    static let maxChunk = Profile.live.maxChunk       // 6s 強制切(live)
+    static let minVoiced = Profile.live.minVoiced     // 有聲跨度 ≥0.5s 才值得轉
+    static let idleDrop = Profile.live.idleDrop       // 3s 全靜音 → 丟
 
     mutating func feed(_ new: [Float]) -> [Chunk] {
         guard !new.isEmpty else { return [] }
@@ -39,14 +53,14 @@ struct VadChunker {
         let trailingSilence = end - max(lastVoice, consumed)
         let voicedSpan = (firstVoice >= 0) ? (lastVoice - firstVoice) : 0
 
-        if samples.count >= Self.maxChunk {
-            return voicedSpan >= Self.minVoiced ? [cut()] : { drop(); return [] }()
+        if samples.count >= profile.maxChunk {
+            return voicedSpan >= profile.minVoiced ? [cut()] : { drop(); return [] }()
         }
-        if firstVoice >= 0, trailingSilence >= Self.silenceCut {
-            if voicedSpan >= Self.minVoiced { return [cut()] }
+        if firstVoice >= 0, trailingSilence >= profile.silenceCut {
+            if voicedSpan >= profile.minVoiced { return [cut()] }
             drop(); return []                 // 只有雜訊尖峰,不值得轉
         }
-        if firstVoice < 0, samples.count >= Self.idleDrop {
+        if firstVoice < 0, samples.count >= profile.idleDrop {
             drop(); return []
         }
         return []
@@ -54,7 +68,7 @@ struct VadChunker {
 
     mutating func flush() -> Chunk? {
         defer { drop() }
-        guard firstVoice >= 0, (lastVoice - firstVoice) >= Self.minVoiced else { return nil }
+        guard firstVoice >= 0, (lastVoice - firstVoice) >= profile.minVoiced else { return nil }
         return Chunk(samples: samples, startOffset: consumed)
     }
 

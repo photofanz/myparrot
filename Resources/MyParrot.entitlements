@@ -4,5 +4,8 @@
 <dict>
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- #2407 CAL-03:hardened runtime 下讀行事曆要這個,沒有的話 requestFullAccessToEvents 直接回 false、TCC 不會跳詢問(2026-10-17 實測) -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
 </dict>
 </plist>

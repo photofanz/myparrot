@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import os
+import MyParrotObjC
 
 /// Captures "you" — the microphone — via AVAudioEngine.
 /// Kept separate from the system tap so the Bluetooth headset can stay on A2DP
@@ -38,6 +40,10 @@ final class MicCapture: @unchecked Sendable {
     /// 其餘引擎控制狀態一樣不需要鎖——`@unchecked Sendable` 的既有理由(class 頂
     /// 端註解)已涵蓋:所有讀寫都在 main thread。
     private var rebuildScheduled = false
+    /// AUD-37(#2523):裝置變更後重建失敗的重試次數。AirPods 剛連上那一瞬間 inputNode 回報
+    /// 0 聲道,等 1 秒端點就緒再試;超過上限交 AUD-28 看門狗。
+    private var rebuildAttempts = 0
+    static let maxRebuildAttempts = 3
 
     /// Optional specific input device; nil = system default input.
     func start(deviceID: AudioDeviceID? = nil) throws {
@@ -48,31 +54,67 @@ final class MicCapture: @unchecked Sendable {
         observeConfigurationChange()
     }
 
+    /// AUD-37(#2523):輸入格式要能裝 tap——取樣率與聲道數都要 >0。10/22 10:31 真機:
+    /// AirPods 剛連上那一瞬間 AUHAL 先選到只有輸出的端點,inputNode 回報 0 聲道,
+    /// `installTap` 對這種格式用 NSException 斷言(不是 throw),Swift `try?` 接不到 ⇒ abort。
+    static func isUsableInputFormat(sampleRate: Double, channels: UInt32) -> Bool {
+        sampleRate > 0 && channels > 0
+    }
+
     /// Pin the device, read the *current* hardware format, install the tap and start.
     /// Reused by `start()` and by the configuration-change self-heal — both must read a
     /// FRESH format: after a device/route change `outputFormat(forBus:)` only reflects the
     /// new device once the audio unit has renegotiated its stream description.
+    ///
+    /// AUD-37:整段包進 ObjC `@try/@catch`(`MPCatchObjCException`)。AVFAudio 的前置條件
+    /// 失敗(格式與硬體不符、0 聲道、重複裝 tap)全是 NSException,Swift 的 do/catch 接不到;
+    /// 轉成 Swift error 丟回呼叫端,讓 `rebuildAfterConfigurationChange` 重試、看門狗接手,
+    /// 而不是整個 app 死掉。
     private func buildAndStart() throws {
-        let input = engine.inputNode
-        if let deviceID, let au = input.audioUnit {
-            var dev = deviceID
-            AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
-                                 kAudioUnitScope_Global, 0, &dev,
-                                 UInt32(MemoryLayout<AudioDeviceID>.size))
+        var failure: Error?
+        var tapWasInstalled = false
+        let exception = MPCatchObjCException {
+            do {
+                let input = self.engine.inputNode
+                if let deviceID = self.deviceID, let au = input.audioUnit {
+                    var dev = deviceID
+                    AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice,
+                                         kAudioUnitScope_Global, 0, &dev,
+                                         UInt32(MemoryLayout<AudioDeviceID>.size))
+                }
+                let format = input.outputFormat(forBus: 0)
+                guard Self.isUsableInputFormat(sampleRate: format.sampleRate, channels: format.channelCount) else {
+                    throw "麥克風不可用(輸入格式 \(Int(format.sampleRate)) Hz／\(format.channelCount) ch)"
+                }
+                // format: nil = 用節點此刻的輸出格式(避開「傳入格式與硬體不符」那條斷言);
+                // 下游 MonoDownconverter 逐 buffer 看格式重採樣,不依賴固定格式。
+                input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
+                    guard let self else { return }
+                    if self.gain != 1.0 { buffer.scale(by: self.gain) }
+                    self.onLevel?(buffer.rmsLevel)
+                    self.onBuffer?(buffer)
+                }
+                tapWasInstalled = true
+                self.engine.prepare()
+                try self.engine.start()
+            } catch {
+                failure = error
+            }
         }
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else { throw "麥克風不可用" }
-
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            if self.gain != 1.0 { buffer.scale(by: self.gain) }
-            self.onLevel?(buffer.rmsLevel)
-            self.onBuffer?(buffer)
+        tapInstalled = tapWasInstalled
+        if let exception {
+            os_log("MyParrot mic: AVAudioEngine 例外 %{public}@: %{public}@",
+                   exception.name.rawValue, exception.reason ?? "")
+            if tapWasInstalled { removeTapQuietly() }
+            throw "麥克風引擎例外:\(exception.name.rawValue) \(exception.reason ?? "")"
         }
-        tapInstalled = true
+        if let failure { throw failure }
+    }
 
-        engine.prepare()
-        try engine.start()
+    /// `removeTap` 在沒有輸入裝置時同樣可能斷言,一樣包起來。
+    private func removeTapQuietly() {
+        _ = MPCatchObjCException { self.engine.inputNode.removeTap(onBus: 0) }
+        tapInstalled = false
     }
 
     /// AUD-27 / BUG-18: when the input hardware's channel count or sample rate changes
@@ -121,19 +163,31 @@ final class MicCapture: @unchecked Sendable {
     /// `AVAudioEngineConfigurationChange`(一次路由變更可能觸發格式變更+裝置
     /// 變更兩則通知),`rebuildScheduled` 確保這些通知合併成同一次重建,不會
     /// 排出好幾個互相打架的 `asyncAfter` 重建。
-    private func rebuildAfterConfigurationChange() {
+    ///
+    /// ④ AUD-37(#2523,2026-10-22):重建失敗(端點還沒就緒、格式 0 聲道、AVFAudio 斷言被
+    /// `buildAndStart` 接成 error)不再 `try?` 吞掉——1 秒後再試,最多 3 次;仍失敗就保持
+    /// `isRunning` 讓 AUD-28 看門狗(3 秒無訊號)走 `rebuildCurrentMic()` 換裝置重建。
+    private func rebuildAfterConfigurationChange(after delay: TimeInterval = 0.3) {
         guard isRunning, !rebuildScheduled else { return }
         rebuildScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.rebuildScheduled = false
             guard self.isRunning else { return }
-            self.engine.inputNode.removeTap(onBus: 0)
-            self.tapInstalled = false
+            self.removeTapQuietly()
             self.engine.stop()
-            // If the new format isn't ready yet (0 Hz) this throws; we keep `isRunning` true
-            // and let the controller's liveness watchdog (AUD-28) retry / fall back.
-            try? self.buildAndStart()
+            do {
+                try self.buildAndStart()
+                self.rebuildAttempts = 0
+            } catch {
+                self.rebuildAttempts += 1
+                os_log("MyParrot mic: 裝置變更後重建失敗(第 %d 次):%{public}@", self.rebuildAttempts, "\(error)")
+                if self.rebuildAttempts < Self.maxRebuildAttempts {
+                    self.rebuildAfterConfigurationChange(after: 1.0)
+                } else {
+                    self.rebuildAttempts = 0
+                }
+            }
         }
     }
 
@@ -145,12 +199,12 @@ final class MicCapture: @unchecked Sendable {
         // 真的裝了判斷,不管 `isRunning` 有沒有真的翻過。
         guard isRunning || tapInstalled else { return }
         isRunning = false
-        tapInstalled = false
+        rebuildAttempts = 0
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
         }
-        engine.inputNode.removeTap(onBus: 0)
+        removeTapQuietly()
         engine.stop()
     }
 

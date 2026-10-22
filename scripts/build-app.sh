@@ -44,6 +44,20 @@ else
 fi
 # UI-33b footer 大頭圖:與動畫幀用途獨立,單獨打包(二審:巢在上面 if 裡會在幀缺時
 # 連帶無聲丟掉 head)。缺檔明講,不假裝完整成功。
+# #2438 UI v2:鸚鵡新姿勢幀(缺檔不擋,app 用 idle 幀變形模擬)與計時字型(R1 Share Tech Mono,OFL 1.1)
+for f in pant sleep; do
+  if png_ok "Resources/mascot/$f.png"; then
+    mkdir -p "$APP/Contents/Resources/mascot"
+    cp "Resources/mascot/$f.png" "$APP/Contents/Resources/mascot/"
+    echo "▶ embedded mascot frame $f"
+  fi
+done
+if ls Resources/Fonts/*.ttf >/dev/null 2>&1; then
+  mkdir -p "$APP/Contents/Resources/Fonts"
+  cp Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
+  [ -f Resources/Fonts/OFL.txt ] && cp Resources/Fonts/OFL.txt "$APP/Contents/Resources/Fonts/"
+  echo "▶ embedded fonts: $(ls Resources/Fonts/*.ttf | xargs -n1 basename | tr '\n' ' ')"
+fi
 if png_ok Resources/mascot/head.png; then
   mkdir -p "$APP/Contents/Resources/mascot"
   cp Resources/mascot/head.png "$APP/Contents/Resources/mascot/"

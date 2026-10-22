@@ -10,8 +10,13 @@ let buildStamp =
     (Bundle.main.infoDictionary?["MPBuildStamp"] as? String).map { "build \($0)" } ?? "build dev"
 
 struct SettingsView: View {
+    /// UI-57:「模型」區段的捲動錨點(首次提示「打開設定」用)。
+    static let modelSectionID = "model"
+    @AppStorage(AppearanceMode.key) private var appearanceRaw = AppearanceMode.system.rawValue
     @Bindable var controller: RecordingController
     @Bindable var updates: UpdateChecker
+    /// #2438 M6:「模型」區段要讀寫會議記錄 session(自動更新／間隔)與共用的選擇流程。
+    @Bindable var uiState: AppUIState
     @Bindable private var loc = Localizer.shared
     @Environment(\.dismiss) private var dismiss
     @State private var escMonitor: Any?
@@ -34,11 +39,17 @@ struct SettingsView: View {
             }.padding(MP.spL)
             Divider()
 
+            ScrollViewReader { proxy in
             Form {
                 Section {
                     Picker(L("介面語言"), selection: $loc.language) {
                         ForEach(AppLanguage.allCases) { l in Text(l.label).tag(l) }
                     }
+                    // UI-56(Eric 2026-10-20):外觀三選一,預設跟隨系統;改了立刻套到所有視窗,重開記得。
+                    Picker(L("外觀"), selection: $appearanceRaw) {
+                        ForEach(AppearanceMode.allCases) { m in Text(L(m.labelKey)).tag(m.rawValue) }
+                    }
+                    .onChange(of: appearanceRaw) { _, _ in AppearanceMode.applyStored() }
                 } header: { Text(L("介面語言")) }
 
                 Section {
@@ -88,23 +99,33 @@ struct SettingsView: View {
 
                 Section {
                     Picker(L("辨識語言"), selection: $controller.language) {
-                        ForEach(TranscriptionLanguage.allCases) { lang in Text(lang.label).tag(lang) }
+                        ForEach(TranscriptionLanguage.allCases) { lang in Text(L(lang.label)).tag(lang) }
                     }
                     Text(L("預設跟隨系統語言;不支援的語言會用英文。支援:英/繁中/日/韓/簡中。"))
                         .font(MPFont.caption).foregroundStyle(.tertiary).lineSpacing(3)
                     // 2026-08-23 Eric:雲端(自帶 API)尚未實作,選單先藏(enum 保留給 Core/CLI 相容;舊設定值 .cloud 由 Core 回退原生)。
                     Picker(L("引擎"), selection: $controller.engine) {
-                        ForEach(TranscriptionEngine.allCases.filter { $0 != .cloud }) { e in Text(e.label).tag(e) }
+                        ForEach(TranscriptionEngine.allCases.filter { $0 != .cloud }) { e in Text(L(e.label)).tag(e) }
                     }
                     // 2026-08-23 Eric:模型管理原本只在引擎=Whisper 時顯示,但「結束後自動高精度」也吃 Whisper 模型
                     // → 引擎=原生時使用者找不到下載入口。兩者任一開啟就顯示。
-                    if controller.engine == .whisperKit || controller.autoTranscribeAfterStop { whisperModelRows }
+                    if controller.engine == .whisperKit || controller.transcribePolicy != .never { whisperModelRows }
                     VStack(alignment: .leading, spacing: MP.spXS) {
-                        Toggle(L("結束後自動產出高精度逐字稿"), isOn: $controller.autoTranscribeAfterStop)
+                        // #2483 E(TRX-05):三選一取代開關;預設「閒置時」。
+                        Picker(L("結束後高精度重轉"), selection: $controller.transcribePolicy) {
+                            Text(L("立刻")).tag(TranscribePolicy.immediately)
+                            Text(L("閒置時(接電、沒在錄音)")).tag(TranscribePolicy.whenIdle)
+                            Text(L("不重轉")).tag(TranscribePolicy.never)
+                        }
                         Text(L("錄音停止後用 Whisper 高精度重轉一次;即時稿僅供會中參考。"))
                             .font(MPFont.caption).foregroundStyle(.tertiary).lineSpacing(3)
                     }
                 } header: { Text(L("逐字稿")) }
+
+                // #2438 T3／MDL-03:單一「模型」區段(取代 #2417「逐字稿校正」區段;每個能力各選後端,預設全關)。
+                ModelSettingsSection(controller: controller, uiState: uiState).id(Self.modelSectionID)
+
+                CalendarReminderSettingsSection()   // #2407 會議前提醒錄音(預設關閉)
 
                 Section {
                     LabeledContent(L("存檔目錄")) {
@@ -134,6 +155,15 @@ struct SettingsView: View {
                 } header: { Text(L("軟體更新")) }
             }
             .formStyle(.grouped)
+            // UI-57:「打開設定」要直接捲到「模型」區段;設定頁剛開 Form 還在排版,延遲一拍再捲。
+            .onChange(of: uiState.settingsScrollTo, initial: true) { _, target in
+                guard let target else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                    uiState.settingsScrollTo = nil
+                }
+            }
+            }
             // UI-22 item 9: build stamp 自 adBar 搬到這裡——設定頁底部小字,主畫面淨空。
             Text(buildStamp)
                 .font(MPFont.caption.monospaced())
@@ -141,6 +171,8 @@ struct SettingsView: View {
                 .padding(.horizontal, MP.spL).padding(.vertical, MP.spS)
         }
         .frame(width: 480, height: 640)
+        // #2438 M6(MDL-03):模型後端的隱私確認框(掛根節點,不受 Form 延遲載入影響)。
+        .modifier(ModelPrivacyPrompt(controller: controller, uiState: uiState))
         // UI-24: Esc 關閉(Return 已用 .keyboardShortcut(.defaultAction) 掛在「完成」)。
         // 2026-08-23 真機驗:.onExitCommand 與隱藏 .cancelAction 鈕在 sheet 內都接不到 Esc
         // (焦點留在主視窗輸入框)→ 改掛 NSEvent 本地監聽,sheet 存在期間 keyCode 53 即 dismiss。
@@ -165,7 +197,7 @@ struct SettingsView: View {
             Text(L("Whisper 模型")).font(MPFont.label)
             ForEach(WhisperModel.knownModels) { m in
                 HStack(spacing: MP.spS) {
-                    Text(m.display).font(MPFont.caption)
+                    Text(L(m.display)).font(MPFont.caption)
                     Spacer()
                     if let p = modelProgress[m.id] {
                         ProgressView(value: p).frame(width: 80)

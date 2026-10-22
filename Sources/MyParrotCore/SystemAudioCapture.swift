@@ -69,14 +69,37 @@ final class SystemAudioCapture {
 
     private(set) var isRunning = false
 
-    /// Process object IDs to exclude from the tap (e.g. our own app to avoid echo).
+    /// Extra process object IDs to exclude from the tap (on top of our own process).
     var excludedProcesses: [AudioObjectID] = []
+    /// BUG-29(#2411):the exclusion list actually handed to the tap on the last `start()`
+    /// (own process + `excludedProcesses`), for logging / verification.
+    private(set) var activeExclusions: [AudioObjectID] = []
+
+    /// pid → Core Audio process object。`CoreAudioUtils` 早就有 `translatePIDToProcessObject`
+    /// (註解寫「used to exclude our own audio」),只是從來沒人呼叫——BUG-29 就是這個洞。
+    /// 行程還沒碰過音訊時可能沒有物件(回 nil);我們在 mic 之後才開 tap,所以正常有。
+    static func processObject(forPID pid: pid_t) -> AudioObjectID? {
+        guard let id = try? AudioObjectID.translatePIDToProcessObject(pid), id.isValid else { return nil }
+        return id
+    }
+
+    /// 純函式:最終排除清單＝自己的 process object(有的話)＋額外清單,去重。
+    static func exclusionList(own: AudioObjectID?, extra: [AudioObjectID]) -> [AudioObjectID] {
+        var out: [AudioObjectID] = []
+        for id in (own.map { [$0] } ?? []) + extra where id != AudioObjectID.unknown && !out.contains(id) { out.append(id) }
+        return out
+    }
 
     func start() throws {
         guard !isRunning else { return }
 
-        // Global tap of all system output, optionally excluding given processes.
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: excludedProcesses)
+        // Global tap of all system output, excluding OUR OWN process (so playing back a
+        // recording or monitoring the mic through the speakers is not captured into 對方
+        // — BUG-29) plus any extra processes the caller listed.
+        let own = Self.processObject(forPID: ProcessInfo.processInfo.processIdentifier)
+        activeExclusions = Self.exclusionList(own: own, extra: excludedProcesses)
+        if own == nil { Logger(subsystem: "tw.uncle.MyParrot", category: "capture").notice("own process has no audio object; tap will not exclude self") }
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: activeExclusions)
         desc.uuid = UUID()
         desc.muteBehavior = .unmuted   // keep playing in the user's ears
         desc.isPrivate = true

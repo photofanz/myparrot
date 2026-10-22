@@ -17,19 +17,25 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.1</string>
+	<string>0.5.0</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
+	<string>7</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>MyParrot 需要擷取系統音訊,才能錄下會議中「對方」的聲音。</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>MyParrot 讀取你勾選的行事曆,才能在會議開始前提醒你錄音。</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>MyParrot 讀取你勾選的行事曆,才能在會議開始前提醒你錄音。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MyParrot 需要麥克風,才能錄下「你」的聲音。</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>MyParrot 用通知在會議開始前提醒你錄音。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>MyParrot 使用本機語音辨識把錄音轉成逐字稿。</string>
 </dict>

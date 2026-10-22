@@ -14,7 +14,9 @@ public enum TranscriptionLanguage: String, CaseIterable, Identifiable, Sendable 
 
     public var label: String {
         switch self {
+        // l10n-keys:begin(BUG-28:只有這行要翻,其餘是各語言自己的名字)
         case .system: return "跟隨系統"
+        // l10n-keys:end
         case .en:     return "English"
         case .zhTW:   return "繁體中文"
         case .ja:     return "日本語"

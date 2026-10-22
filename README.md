@@ -4,15 +4,32 @@
 
 [繁體中文說明 →](README.zh-TW.md)
 
-![Main window — speaker-tagged transcript; the playing row shows a stereo waveform (top = them, bottom = you) — click anywhere to seek](docs/img/main-window.png)
+![Main window (light) — speaker-tagged transcript, Markdown notes with time markers, meeting minutes, and the Siri Remote–style controller](docs/img/main-window.png)
 
 <p>
-<img src="docs/img/recording.png" width="560" alt="Recording — per-channel level meters, shortcuts printed right on the buttons">
+<img src="docs/img/recording.png" width="560" alt="Recording — live transcript, per-channel LED ring, shortcuts printed right on the buttons">
 </p>
 <p>
-<img src="docs/img/narrow-mode.png" width="260" alt="Narrow window (320pt)"> &nbsp;
+<img src="docs/img/narrow-mode.png" width="260" alt="Narrow window"> &nbsp;
 <img src="docs/img/mini-mode.png" width="300" alt="Floating mini mode">
 </p>
+<p>
+<img src="docs/img/main-window-dark.png" width="560" alt="Main window (dark) — obsidian controller">
+</p>
+
+## What's new in 0.5.0
+
+- **New UI (v2)** — Siri Remote–style controller (silver aluminium in light mode, obsidian in dark) and a panel workspace: transcript / notes / minutes columns you can toggle, drag to reorder and resize; the file pane gets search, sidecar badges, rename and move-to-Trash.
+- **Notes** — one Markdown note per recording; ⌘⇧M drops a time marker, and transcript lines can be quoted into the note.
+- **Meeting minutes (optional, off by default)** — a rolling summary / decisions / action items / open questions / timeline every N minutes while recording, one click after stop. Backends: **Apple on-device model** (macOS 26+, Apple Intelligence — nothing leaves the Mac) or **Claude CLI** (your local `claude` command; the transcript and your notes are sent to Anthropic, and a privacy notice is shown before you can turn it on).
+- **Transcript correction (optional, off by default)** — suggests the words most likely mis-heard; nothing changes until you accept. Same backends. Accepted corrections survive the high-accuracy re-transcription.
+- **Fixed: post-meeting re-transcription looping on one sentence** — the whole-file Whisper pass could lock onto a hallucinated sentence and repeat it for the rest of a long two-party recording while the live transcript was fine. The file pass now uses the same voice-activity chunking as the live transcript, each chunk decoded independently; the live transcript is also kept as `.live.srt`.
+- **Fixed: crash when a Bluetooth headset connected mid-recording** — the microphone engine rebuild could hit an AVFoundation assertion and abort the whole app; it now retries and falls back instead.
+- **Re-transcription scheduling** — the high-accuracy pass runs when the Mac is idle (on power, not recording, no input for two minutes), or immediately / never — your choice. Whisper unloads after three idle minutes.
+- **Appearance** — follow system / light / dark. A one-time hint on first launch shows where the AI features live.
+- **GUI + CLI coexistence (experimental)** — one recording writer at a time; starting the app no longer reaps another process's in-progress recording; the GUI shows, and can stop, a CLI recording.
+- Calendar-triggered recording reminders (off by default), and several recording-robustness fixes.
+- **Requirements changed**: macOS 15+; the SpeechAnalyzer live transcript and the Apple on-device model need macOS 26+.
 
 ## What's new in 0.3.1
 
@@ -40,18 +57,20 @@
 
 - **The other side** — Core Audio **Process Tap** (macOS 14.4+): captures system audio with no driver, no kernel extension, no virtual audio device
 - **You** — AVAudioEngine microphone capture that **survives device/route changes mid-recording** (auto-heal on configuration change + a liveness watchdog; hot-swap mics without stopping — the file stays continuous)
-- **Live transcript** while recording — three swappable engines: macOS 26 **SpeechAnalyzer** (long-form streaming, automatic fallback to SFSpeechRecognizer on older systems), or a fully local **Whisper** engine (whisper.cpp + Metal, large-v3 family) for stronger mixed-language (Mandarin/English) accuracy — recording auto-upgrades to a higher-precision re-transcribe once you stop
+- **Live transcript** while recording — swappable engines: macOS 26 **SpeechAnalyzer** (long-form streaming, automatic fallback to SFSpeechRecognizer on macOS 15), or a fully local **Whisper** engine (whisper.cpp + Metal, large-v3 family) for stronger mixed-language (Mandarin/English) accuracy. After you stop, a higher-precision Whisper re-transcription runs when the Mac is idle (or immediately / never); the live transcript is kept alongside as `.live.srt`
+- **Notes, meeting minutes and transcript correction** — a Markdown note per recording; optional AI minutes and correction suggestions (off by default) through an **Apple on-device model** or your local **Claude CLI**, behind a single “Model” section in Settings
+- **Appearance** — follow system / light / dark; Siri Remote–style controller in silver (light) or obsidian (dark)
 - Whisper models download in-app (Settings) or drop a `ggml-*.bin` into Application Support yourself — nothing is bundled, nothing calls home unless you ask it to
 - **Transcribe past recordings** → `.txt` + timestamped, speaker-prefixed `.srt`, with automatic simplified→traditional Chinese normalization on Whisper output
 - **Offline echo cancellation** (optional, non-destructive — writes `*_aec.m4a`, never touches the original)
 - Auto CAF→m4a conversion, quit-protection while recording, floating mini mode, input-gain with soft limiter
 - UI in English / 繁體中文 / 简体中文 / 日本語 / 한국어
 - A build stamp in the footer, so you always know exactly which build you're running
-- **Privacy**: fully offline. The only network calls are the optional update check (GitHub Releases) and Whisper model downloads you trigger yourself
+- **Privacy**: offline by default. The network is used only for the optional update check (GitHub Releases), Whisper model downloads you start yourself, and — **only if you enable the Claude CLI backend** — meeting-minutes / correction requests sent through your local `claude` command to Anthropic (what gets sent is the transcript and your notes; a notice explains this before you can turn it on). The Apple on-device backend never leaves the Mac. Calendar reminders (off by default) need Calendar and Notifications permission
 
 ## Requirements
 
-- **macOS 14.4+** (system-audio Process Tap API) — **macOS 26.1+ recommended** for live transcription (26.0 has a known process-tap regression)
+- **macOS 15+** — **macOS 26.1+ recommended**: the SpeechAnalyzer live transcript and the Apple on-device model need macOS 26+, and 26.0 has a known process-tap regression. On macOS 15 the live transcript uses SFSpeechRecognizer or the local Whisper engine
 - **Swift 6 toolchain** — Xcode **Command Line Tools are enough** to build, run, and self-test. Full Xcode is only needed for `swift test`.
 - **cmake** (`brew install cmake`) — one-time only, to build the local Whisper engine from source (see Quick start)
 
@@ -71,7 +90,7 @@ bash scripts/build-app.sh       # assemble, sign, install to ~/Applications
 open ~/Applications/MyParrot.app
 ```
 
-First launch asks for **Microphone**, **Speech Recognition**, and **System Audio Recording** permissions (it will *not* ask for Screen Recording).
+First launch asks for **Microphone**, **Speech Recognition**, and **System Audio Recording** permissions (it will *not* ask for Screen Recording). **Calendar** and **Notifications** are requested only if you turn on meeting reminders in Settings.
 
 ## ⚠️ Gotchas (read these, they will save you an hour)
 
@@ -115,6 +134,8 @@ A `transcribe` hook can **replace** the built-in transcription (bring your own A
 | Hot-swapping *to* a Bluetooth mic mid-recording | One audible pop at the switch (OS profile change) |
 | Capture gaps shorter than 0.3 s | Not silence-padded (trade-off that eliminates padding clicks); the track may shift ≤0.3 s early in that window |
 | Echo cancellation | Offline post-process only, off by default |
+| GUI and CLI recording at the same time | A global lease allows one writer at a time; verified with synthetic writers, not yet with two real microphone recordings |
+| 日本語 / 한국어 UI strings | Machine-assisted, not yet reviewed by native speakers |
 
 ## Legal
 
@@ -131,8 +152,11 @@ Sources/MyParrotCore/        Library: capture, mux, transcription, export
   RecordingController.swift  State machine, device watchdog, conversion, playback
   EchoCleanup / EchoCanceller / DelayEstimator   Offline AEC (bulk-delay + NLMS)
   Transcription/             SpeechAnalyzer (live + file) + SFSpeech fallback,
-                              local Whisper engine (whisper.cpp/Metal) + model manager
-  SelfTest.swift             15 self-test cases (shared by CLI runner & swift test)
+                              local Whisper engine (whisper.cpp/Metal, VAD-chunked) + model manager
+  Models/ Correction/        Model backend registry; meeting minutes & correction (Apple on-device / Claude CLI)
+  Notes/ Workspace/          Markdown notes; panel workspace layout
+  SelfTest*.swift            Self-test cases (shared by CLI runner & swift test)
+Sources/MyParrotObjC/        ObjC @try/@catch bridge — AVFoundation assertions become Swift errors, not aborts
 Sources/MyParrot/            SwiftUI app (main window, mini mode, settings, mascot)
 Sources/MyParrotSelfTest/    CLI test runner — works with Command Line Tools only
 Tests/MyParrotTests/         Swift Testing wrappers (one @Test per self-test case)

@@ -10,6 +10,7 @@ public struct WhisperModel: Identifiable, Hashable, Sendable {
     public let downloadURL: URL?
     public let approxMB: Int
 
+    // l10n-keys:begin(BUG-28:display 會顯示在設定頁,括號內說明要跟介面語言)
     public static let knownModels: [WhisperModel] = [
         WhisperModel(id: "large-v3-turbo",
                      display: "large-v3-turbo(建議·1.6GB·快)",
@@ -27,6 +28,7 @@ public struct WhisperModel: Identifiable, Hashable, Sendable {
                      downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"),
                      approxMB: 3095)
     ]
+    // l10n-keys:end
 }
 
 public enum WhisperModelStore {

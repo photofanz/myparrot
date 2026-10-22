@@ -12,11 +12,13 @@ struct ShortcutBadge: View {
     /// true inside the red primary buttons (開始/結束) — same-hue pale tint
     /// instead of the neutral pill, so it reads on the red background.
     var onAccent: Bool = false
+    /// #2438 遙控器扇形鍵／圓鍵格用 9pt 小膠囊;預設 11。
+    var size: CGFloat = 11
 
     var body: some View {
         Text(symbol)
-            .font(.system(size: 11, weight: .regular, design: .monospaced))
-            .padding(.horizontal, 5).padding(.vertical, 1)
+            .font(.system(size: size, weight: .regular, design: .monospaced))
+            .padding(.horizontal, size < 11 ? 4 : 5).padding(.vertical, size < 11 ? 0 : 1)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(onAccent ? Color.white.opacity(0.20) : Color.primary.opacity(0.06))

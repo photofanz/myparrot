@@ -26,6 +26,13 @@ final class StereoRecorder: @unchecked Sendable {
 
     private(set) var isRecording = false
     var isPaused = false
+    /// #949 REC-33:寫檔失敗不再 `try?` 吞掉——第一次失敗(磁碟滿、檔被搬走、權限…)記在這裡並經 `onError`
+    /// 回報一次(controller ⇒ lastError ⇒ UI 橫幅/CLI);之後同一場的失敗不重複回報(drain 每 0.1 秒一次,會洗版)。
+    private let errorLock = NSLock()
+    private var firstWriteError: Error?
+    var writeError: Error? { errorLock.withLock { firstWriteError } }
+    /// 在錄音的 drain 佇列(或 stop 的呼叫端)上呼叫;接收端自己 hop 到主執行緒。
+    var onError: (@Sendable (Error) -> Void)?
     /// First-buffer flags for head-start alignment (AUD-29): whichever side starts
     /// late gets that much leading silence so both channels keep a common t0 under
     /// min()-paced draining. Plain vars like isPaused — worst-case race is one
@@ -50,6 +57,7 @@ final class StereoRecorder: @unchecked Sendable {
         leftStarted = false; rightStarted = false
         file = try AVAudioFile(forWriting: url, settings: format.settings,
                                commonFormat: .pcmFormatFloat32, interleaved: false)
+        errorLock.withLock { firstWriteError = nil }
         isPaused = false
         isRecording = true
 
@@ -112,7 +120,21 @@ final class StereoRecorder: @unchecked Sendable {
             ch[0][i] = left[i]
             ch[1][i] = right[i]
         }
-        try? file.write(from: buffer)
+        write(buffer, to: file)
+    }
+
+    /// 寫一塊;失敗只回報第一次(見 `onError`)。
+    private func write(_ buffer: AVAudioPCMBuffer, to file: AVAudioFile) {
+        do {
+            try file.write(from: buffer)
+        } catch {
+            let isFirst: Bool = errorLock.withLock {
+                guard firstWriteError == nil else { return false }
+                firstWriteError = error
+                return true
+            }
+            if isFirst { onError?(error) }
+        }
     }
 
     func stop() {
@@ -134,7 +156,7 @@ final class StereoRecorder: @unchecked Sendable {
                   let ch = buffer.floatChannelData else { break }
             buffer.frameLength = AVAudioFrameCount(n)
             for i in 0..<n { ch[0][i] = left[i]; ch[1][i] = right[i] }
-            try? file.write(from: buffer)
+            write(buffer, to: file)
         }
     }
 }

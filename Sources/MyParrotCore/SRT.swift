@@ -3,7 +3,7 @@ import Foundation
 /// Renders transcript lines as a SubRip (.srt) subtitle file — numbered cues with
 /// `HH:MM:SS,mmm --> HH:MM:SS,mmm` timecodes and a speaker prefix, so the timed
 /// transcript opens in any player / editor (Premiere, DaVinci, VLC, YouTube…).
-enum SRT {
+public enum SRT {
     static func make(from lines: [TranscriptLine]) -> String {
         let cues = lines.filter { !$0.text.isEmpty }.sorted { $0.start < $1.start }
         var out = ""
@@ -20,6 +20,37 @@ enum SRT {
             out += "\(i + 1)\n\(timecode(start)) --> \(timecode(end))\n\(speaker): \(line.text)\n\n"
         }
         return out
+    }
+
+    /// `make` 的反向(#2417):把既有 `.srt` 讀回 `[TranscriptLine]`,讓校正層能對
+    /// 「這次開 App 之前就轉好」的逐字稿動作。只認自己寫出的格式(編號/時間碼/
+    /// 「對方: 」或「你: 」前綴);沒有前綴的 cue 視為對方。
+    public static func parse(_ srt: String) -> [TranscriptLine] {
+        var lines: [TranscriptLine] = []
+        let blocks = srt.replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n\n")
+        for block in blocks {
+            let rows = block.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+            guard rows.count >= 3, let arrow = rows[1].range(of: " --> ") else { continue }
+            let start = seconds(String(rows[1][rows[1].startIndex..<arrow.lowerBound]))
+            let end = seconds(String(rows[1][arrow.upperBound...]))
+            var text = rows[2...].joined(separator: "\n")
+            var isYou = false
+            if text.hasPrefix("你: ") { isYou = true; text = String(text.dropFirst(3)) }
+            else if text.hasPrefix("對方: ") { text = String(text.dropFirst(4)) }
+            guard !text.isEmpty else { continue }
+            lines.append(TranscriptLine(isYou: isYou, time: Date(timeIntervalSince1970: start),
+                                        text: text, isFinal: true,
+                                        start: start, duration: max(0, end - start)))
+        }
+        return lines
+    }
+
+    /// `HH:MM:SS,mmm` → 秒;格式不對回 0。
+    static func seconds(_ tc: String) -> TimeInterval {
+        let parts = tc.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".").split(separator: ":")
+        guard parts.count == 3, let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]) else { return 0 }
+        return h * 3600 + m * 60 + s
     }
 
     static func timecode(_ seconds: TimeInterval) -> String {

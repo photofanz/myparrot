@@ -68,15 +68,21 @@ enum InteractiveMenu {
             Output.errLine("已有錄音進行中(pid \(active)),請先用 myparrot stop 或到那個畫面結束")
             return
         }
-        let session = InteractiveRecordingSession()
+        // #949:GUI(或另一個新版 CLI)持有全域租約 ⇒ 不開第二份。
+        if case .alive(let lease) = RecordingLeaseHolder.inspect() {
+            Output.errLine(lease.owner == "gui"
+                ? guiRecordingRefusal(name: lease.name, elapsed: externalElapsed(lease))
+                : "已有錄音進行中(pid \(lease.pid)),請先用 myparrot stop 或到那個畫面結束")
+            return
+        }
+        let session = InteractiveRecordingSession(recordingsDir: resolvedRecordingsDir(config))
         await session.run(name: name, config: &config)
     }
 
     // MARK: - 2. 最近錄音
 
     private static func recentRecordingsFlow(config: CLIConfigSchema) async {
-        let controller = RecordingController()
-        controller.setRecordingsDir(resolvedRecordingsDir(config))
+        let controller = RecordingController(recordingsDir: resolvedRecordingsDir(config))
         let recs = controller.recordings
         guard !recs.isEmpty else { Output.infoLine("(沒有錄音)"); return }
 
@@ -209,13 +215,18 @@ extension Output {
 /// 互動模式的錄音畫面驅動者(狀態機:錄音中↔已暫停,Enter 結束,m 換麥克風)。
 @MainActor
 final class InteractiveRecordingSession {
-    private let controller = RecordingController()
+    private let controller: RecordingController
     private var stopRequested = false
     private var savedTermios: termios?
     private var sigintSource: DispatchSourceSignal?
 
+    /// #949:建 controller 時就指定錄音資料夾;租約/state 標 owner=cli。
+    init(recordingsDir: URL) {
+        controller = RecordingController(recordingsDir: recordingsDir)
+        controller.leaseOwner = "cli"
+    }
+
     func run(name: String, config: inout CLIConfigSchema) async {
-        controller.setRecordingsDir(resolvedRecordingsDir(config))
         await controller.requestPermissions()
         controller.engine = resolveEngine(config.engine)
         if let langRaw = config.language, let lang = parseLanguage(langRaw) { controller.language = lang }
@@ -241,9 +252,9 @@ final class InteractiveRecordingSession {
         controller.startRecording()
         let startedAt = Date()
         guard controller.state == .recording else {
-            Output.errLine("錄音未能啟動(state=\(controller.state))")
+            Output.errLine("錄音未能啟動(state=\(controller.state))\(controller.lastError.map { ":\($0)" } ?? "")")
             teardownSignalHandler()
-            StateStore.cleanup()
+            StateStore.removePIDFile(ifPID: pid)   // #949:state.json 可能是 GUI owner 的,不刪
             return
         }
 
@@ -310,9 +321,10 @@ final class InteractiveRecordingSession {
             if stopRequested { controller.stop(); break }
 
             let now = Date()
-            if now.timeIntervalSince(lastSecondTick) >= 1.0 {
+            if now.timeIntervalSince(lastSecondTick) >= 0.5 {   // #949 REC-34:owner 每 0.5 秒寫
                 lastSecondTick = now
                 writeState(startedAt: startedAt, name: name)
+                pollCommands()
             }
 
             let frame = Meter.Frame(
@@ -332,18 +344,41 @@ final class InteractiveRecordingSession {
     private func writeState(startedAt: Date, name: String) {
         let s = CLIRecordingState(
             pid: Int32(ProcessInfo.processInfo.processIdentifier), startedAt: ISO8601.string(startedAt),
-            audioPath: "", name: name, state: controller.state == .paused ? "paused" : "recording",
+            audioPath: controller.inprogressAudioPath ?? "", name: name, state: controller.state == .paused ? "paused" : "recording",
             levels: .init(other: Double(controller.otherLevel), you: Double(controller.youLevel),
                          otherSignal: controller.sysHasSignal, youSignal: controller.micHasSignal),
-            warning: controller.deviceChangeWarning, updatedAt: ISO8601.string())
+            warning: controller.deviceChangeWarning, updatedAt: ISO8601.string(),
+            // #949 REC-34 新欄位
+            owner: "cli", sessionId: controller.sessionId ?? "", elapsed: controller.liveElapsed,
+            paused: controller.state == .paused, markers: controller.markerCount)
         try? StateStore.writeState(s)
+    }
+
+    /// #949 REC-36:互動錄音也收 commands/(GUI 橫幅的停止／暫停／繼續);mark 只回 ok(CLI 沒有筆記)。
+    private func pollCommands() {
+        guard let sid = controller.sessionId else { return }
+        let started = controller.heldLease.flatMap { ISO8601.date($0.startedAt) } ?? Date.distantPast
+        for cmd in RecordingCommandStore.pending() {
+            if let why = RecordingCommand.rejection(cmd, sessionId: sid, sessionStartedAt: started) {
+                RecordingCommandStore.complete(cmd.requestId, ok: false, result: why); continue
+            }
+            switch cmd.cmd {
+            case "stop": stopRequested = true; RecordingCommandStore.complete(cmd.requestId, ok: true, result: "stopping")
+            case "pause": controller.pause(); RecordingCommandStore.complete(cmd.requestId, ok: controller.state == .paused, result: "\(controller.state)")
+            case "resume": controller.resume(); RecordingCommandStore.complete(cmd.requestId, ok: controller.state == .recording, result: "\(controller.state)")
+            case "title": if let t = cmd.args["title"] { controller.currentTitle = t }; RecordingCommandStore.complete(cmd.requestId, ok: true, result: controller.currentTitle)
+            default: RecordingCommandStore.complete(cmd.requestId, ok: true, result: cmd.cmd)
+            }
+            if cmd.cmd == "stop" { break }
+        }
     }
 
     // MARK: - 後製(結束錄音後):有 auto=false 的 hook → 現場問(D6 軌 B 規格)
 
     private func postProcess(name: String, config: CLIConfigSchema) async {
-        guard let recID = controller.recordings.first?.id else {
-            Output.errLine("錄音時間過短,未儲存檔案")
+        // #949:用 stop() 真的建的那一筆;發布失敗/太短進隔離區時 lastError 帶原因。
+        guard let recID = controller.lastStoppedRecordingID else {
+            Output.errLine(controller.lastError ?? "錄音時間過短,未儲存檔案")
             return
         }
         let deadline = Date().addingTimeInterval(max(600, controller.elapsed * 4) + 600)
@@ -352,7 +387,7 @@ final class InteractiveRecordingSession {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         guard let rec = controller.recordings.first(where: { $0.id == recID }) else {
-            Output.errLine("錄音檔轉檔失敗或被判定為空檔")
+            Output.errLine(controller.lastError ?? "錄音檔轉檔失敗或被判定為空檔")
             return
         }
         Output.infoLine("已停止錄音:\(rec.url.path)")

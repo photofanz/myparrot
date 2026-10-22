@@ -17,7 +17,7 @@ struct MiniView: View {
             Circle().fill(MP.recRed).frame(width: 8, height: 8)
                 .opacity(controller.state == .recording ? 1 : 0.25)
             Text(MP.clock(controller.elapsed))
-                .font(MPFont.body.weight(.medium).monospaced())
+                .font(MPFont.timer(15)).kerning(0.6).monospacedDigit()   // R1:與圓盤同款計時字型
             VStack(spacing: MP.spXS) {
                 miniMeter(controller.otherLevel, MP.coral,
                           live: controller.state == .recording, ok: controller.sysHasSignal)
@@ -34,6 +34,7 @@ struct MiniView: View {
                 iconBtn("stop", label: L("結束"), shortcut: "⌘E") { controller.stop() }
             default:
                 iconBtn("record.circle", label: L("開始錄音"), shortcut: "⌘R") { controller.startRecording() }
+                    .disabled(controller.externalRecording != nil)   // #949:CLI 在錄就不開第二份
             }
             // v0.3.0 二審:錄音/暫停中也能按「新錄音」→ 與選單 finished-only 規則不一致。
             iconBtn("plus", label: L("新錄音")) { controller.newRecording() }

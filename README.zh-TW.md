@@ -4,15 +4,32 @@
 
 [English README →](README.md)
 
-![主視窗 — 逐字稿自動標好講者;播放列有雙聲道波形(上=對方、下=你),點一下就跳到那一句](docs/img/main-window.png)
+![主視窗(淺色)— 逐字稿自動標好講者、Markdown 筆記帶時間標記、會議記錄,右側是 Siri Remote 風格的遙控器](docs/img/main-window.png)
 
 <p>
-<img src="docs/img/recording.png" width="560" alt="錄音中 — 雙軌電平表,快捷鍵直接印在按鈕上">
+<img src="docs/img/recording.png" width="560" alt="錄音中 — 即時逐字稿、雙軌 LED 環,快捷鍵直接印在按鈕上">
 </p>
 <p>
-<img src="docs/img/narrow-mode.png" width="260" alt="窄版視窗(320pt)"> &nbsp;
+<img src="docs/img/narrow-mode.png" width="260" alt="窄版視窗"> &nbsp;
 <img src="docs/img/mini-mode.png" width="300" alt="懸浮迷你模式">
 </p>
+<p>
+<img src="docs/img/main-window-dark.png" width="560" alt="主視窗(深色)— 黑曜石遙控器">
+</p>
+
+## 0.5.0 新東西
+
+- **全新介面（UI v2）**:Siri Remote 風格遙控器(淺色＝銀色鋁合金、深色＝黑曜石)＋面板工作區:逐字稿／筆記／會議記錄三欄可開關、拖曳換位、在視窗內互換欄寬;檔案面板加搜尋、sidecar 標記、重新命名與移到垃圾桶。
+- **筆記**:每場一份 Markdown 筆記,⌘⇧M 標記時間,逐字稿一鍵引用進筆記。
+- **會議記錄(選用、預設關)**:錄音中每 N 分鐘自動整理「摘要／決議／待辦／待釐清／時間軸」,結束後一鍵產生。後端可選 **Apple 本機模型**(macOS 26+,Apple Intelligence,資料不出機)或 **Claude CLI**(本機 `claude` 指令,逐字稿與筆記會送到 Anthropic,開啟前會先看到隱私說明)。
+- **逐字稿校正(選用、預設關)**:找出最可能聽錯的詞提出建議,人決定才改;後端同上。接受過的校正在高精度重轉後會接回新稿。
+- **修正:會後重轉整份複讀同一句**:整檔一次送 Whisper 時,長時間雙人對話會讓模型咬住一句幻覺、重複到檔尾(即時稿本身是好的)。檔案重轉改成跟即時逐字稿同一套語音活動切塊、每塊獨立解碼;即時稿另存 `.live.srt` 保留。
+- **修正:錄音中藍牙耳機連上會整個 app 崩潰**:麥克風引擎重建踩到 AVFoundation 斷言直接 abort;現在改成重試與退回,不再把錄音連 app 一起殺掉。
+- **會後重轉的時機**:改成「閒置時(接電、沒在錄音、兩分鐘沒碰鍵盤滑鼠)」才跑,也可選「立刻」或「不重轉」。Whisper 閒置 3 分鐘自動卸載。
+- **外觀設定**:跟隨系統／淺色／深色。首次啟動會提示 AI 功能在哪裡開。
+- **GUI 與 CLI 同時存在的防護(實驗)**:同一時間只有一個錄音 writer;啟動時不再把別的進程正在寫的錄音當壞檔收割;GUI 開著時看得到 CLI 的錄音並能停。
+- 行事曆提醒錄音(預設關),以及多項錄音穩定性修正。
+- **系統需求變更**:macOS 15 以上;SpeechAnalyzer 即時逐字稿與 Apple 本機模型需 macOS 26 以上。
 
 ## 0.3.1 新東西
 
@@ -40,18 +57,20 @@
 
 - **對方聲音** — Core Audio **Process Tap**(macOS 14.4+):不裝驅動、不裝核心擴充、不建虛擬音訊裝置
 - **你的聲音** — AVAudioEngine 麥克風擷取,**錄音中裝置/路由變更也不斷**(configuration-change 自癒 + 心跳看門狗;錄音中熱切換麥克風、檔案保持連續)
-- **即時逐字稿** — 三選一引擎:macOS 26 **SpeechAnalyzer**(長時串流,舊系統自動 fallback SFSpeechRecognizer),或全離線的 **Whisper** 引擎(whisper.cpp + Metal,large-v3 系列)——中英夾雜辨識更準;錄音中即時轉完,停止後自動升級成高精度重轉一次
+- **即時逐字稿** — 可切換引擎:macOS 26 **SpeechAnalyzer**(長時串流,macOS 15 自動 fallback SFSpeechRecognizer),或全離線的 **Whisper** 引擎(whisper.cpp + Metal,large-v3 系列)——中英夾雜辨識更準。停止後高精度 Whisper 重轉在機器閒置時才跑(也可選立刻／不重轉),即時稿另存 `.live.srt` 保留
+- **筆記、會議記錄、逐字稿校正** — 每場一份 Markdown 筆記;選用的 AI 會議記錄與校正建議(預設關),後端可選 **Apple 本機模型** 或本機 **Claude CLI**,設定頁單一「模型」區段統一管理
+- **外觀** — 跟隨系統／淺色／深色;Siri Remote 風格遙控器,淺色銀、深色黑曜石
 - Whisper 模型可在 app 內下載(設定頁)或自己丟一顆 `ggml-*.bin` 進 Application Support——不內建、不打電話回家
 - **舊錄音轉逐字稿** → `.txt` + 帶時間碼、講者前綴的 `.srt`,Whisper 輸出自動簡轉繁
 - **離線回音消除**(選用、非破壞式——另存 `*_aec.m4a`,原檔永不被動)
 - CAF→m4a 自動轉檔、錄音中防誤關、懸浮迷你模式、增益+軟限幅
 - 介面:繁中/簡中/英/日/韓
 - 主畫面右下 **build 標記**,永遠知道自己跑的是哪一版
-- **隱私**:全程離線。唯一會連網的是「新版本提醒」(GitHub Releases,可關)與你自己按下的 Whisper 模型下載
+- **隱私**:預設離線。會連網的只有「新版本提醒」(GitHub Releases,可關)、你自己按下的 Whisper 模型下載,以及**只在你開啟 Claude CLI 後端時**,會議記錄／校正會透過本機 `claude` 指令把逐字稿與筆記送到 Anthropic(開啟前有隱私說明)。Apple 本機模型後端資料不出機。行事曆提醒(預設關)需要行事曆與通知權限
 
 ## 需求
 
-- **macOS 14.4+**(系統音訊 Process Tap)——**建議 26.1+**(即時逐字稿;26.0 有已知 process-tap regression)
+- **macOS 15+**——**建議 26.1+**:SpeechAnalyzer 即時逐字稿與 Apple 本機模型需 macOS 26+,且 26.0 有已知 process-tap regression;macOS 15 的即時逐字稿走 SFSpeechRecognizer 或本機 Whisper
 - **Swift 6 工具鏈** — **Command Line Tools 就夠** build、跑、自測;只有 `swift test` 需要完整 Xcode
 - **cmake**(`brew install cmake`)——一次性,只為了從原始碼建置本機 Whisper 引擎(見下方快速開始)
 
@@ -71,7 +90,7 @@ bash scripts/build-app.sh       # 組裝、簽章、裝到 ~/Applications
 open ~/Applications/MyParrot.app
 ```
 
-首次啟動會要 **麥克風**、**語音辨識**、**系統音訊擷取** 三個權限(**不會**要螢幕錄製)。
+首次啟動會要 **麥克風**、**語音辨識**、**系統音訊擷取** 三個權限(**不會**要螢幕錄製);**行事曆**與**通知**只在你到設定開啟會議提醒時才會問。
 
 ## ⚠️ 常見坑(先讀,省你一小時)
 
@@ -115,6 +134,8 @@ myparrot list --json | jq .       # 給 agent/腳本:每行一個 JSON 事件,�
 | 錄音中切「到」藍牙麥 | 切換瞬間一聲爆音(OS profile 切換) |
 | <0.3 秒的短暫擷取中斷 | 不補零(換來零 click);該窗口內該軌可能前移 ≤0.3s |
 | 回音消除 | 離線後製、預設關 |
+| GUI 與 CLI 同時錄音 | 全域租約一次只允許一個 writer;目前用合成 writer 驗證,尚未在兩支真麥克風錄音下驗過 |
+| 日文／韓文介面字串 | 機器輔助翻譯,尚未經母語者校對 |
 
 ## 法律
 

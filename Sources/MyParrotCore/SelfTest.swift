@@ -1,4 +1,5 @@
 import Foundation
+import MyParrotObjC
 import AVFoundation
 
 /// Lightweight self-tests that run under plain Command Line Tools (no Xcode /
@@ -26,10 +27,22 @@ public enum SelfTest {
             transcriptWindow(),
             whisperChunkerAndZhTW(),
             whisperHallucinationGate(),
+            whisperFileChunking(),
+            micInputFormatGuard(),
+            transcriptLoadBaseTime(),
             echoCancel(),
             aecNoEchoGate(),
             sysSilenceWatchdog(),
             btGapFill(),
+            warningZhTWPinned(),
+            warningAutoDismissRules(),
+            quitTranscriptionGuard(),
+            correctionRules(),
+            srtRoundTrip(),
+            correctionPromptAndArgs(),
+            correctionParseOutput(),
+            tapExcludesSelf(),
+            debugCommandParsing(),
             caseUpdateVersionCompare(),
             caseUpdateReleaseDecode(),
             caseUpdateSkipLogic(),
@@ -37,12 +50,91 @@ public enum SelfTest {
             waveformCacheRoundTrip(),
             uniqueFileNameProbe(),
             meterScaleMapping(),
-            titleSanitize()
+            titleSanitize(),
+            whisperIdleUnloadPolicy(),
+            meetingReminderSelection(),
+            dualTimeZoneFormat(),
+            firedReminderStore(),
+            speechActivityAndAlarms(),
+            externalNotifyCommand(),
+            cliRecordingProbe(),
+            windowFrameClamp(),
+            // #2438 UI v2 Phase 1 M1(案例在 SelfTest+UIv2.swift)
+            modelRegistryResolution(),
+            modelLegacyKeyMigration(),
+            modelPrivacyConfirmation(),   // #2438 M6
+            minutesMarkdownRender(),
+            // #2438 Phase 2(案例在 SelfTest+Minutes.swift)
+            minutesPromptAndArgs(),
+            minutesParseOutput(),
+            minutesRollingRules(),
+            paneStateMoveDock(),
+            workspaceLayoutResolve(),
+            workspaceMinWidthAndRedistribute(),   // UI-47b(2026-10-19 23:4x)
+            // #2438 Phase 3a AFM(案例在 SelfTest+AFM.swift)
+            afmRegistry(),
+            afmTokenEstimate(),
+            afmChunk(),
+            afmCompressPrevious(),
+            afmNotesTail(),
+            afmHalvePlan(),
+            afmMessageMap(),
+            afmCorrectionBatches(),
+            // #2483 C 會後重轉接回(案例在 SelfTest+Handoff.swift)
+            transcriptHandoffReapply(),
+            transcriptHandoffPersist(),
+            transcribePolicyMigration(),
+            idleTranscribeDecision(),
+            // #2438 UI v2 Phase 1 M2(案例在 SelfTest+Notes.swift)
+            notesSidecarAndDraft(),
+            notesAtomicAutosave(),
+            markdownToolbarInsert(),
+            markdownEditingBehaviors(),
+            markdownHighlightRanges(),
+            markdownBlocksParse(),
+            sidecarRenamePlan(),
+            sidecarTrashAndLock(),
+            // #949 第一段(案例在 SelfTest+Lease.swift)
+            leaseStateCompat(),
+            leaseAcquireRelease(),
+            leaseClassify(),
+            heartbeatStale(),
+            inprogressPathAndPublishName(),
+            reapDecisionTable(),
+            quarantineInsteadOfDelete(),
+            commandLifecycle()
         ]
     }
 
     // MARK: - Cases
     // 內部可見(非 private)讓 Swift Testing 套件能逐案例呼叫,避免重複測試邏輯。
+
+    /// TR-27(#976):whisper 閒置釋放的兩個純函式決策——逾時解析與釋放閘。
+    /// 覆蓋重點是「什麼時候**不准**釋放」:轉稿中、佇列未空、錄音/暫停中且開著
+    /// 即時逐字稿(live 與 file 共用同一份 context)。
+    static func whisperIdleUnloadPolicy() -> Result {
+        var fails: [String] = []
+
+        // ① 逾時解析:未設定=預設 300;0=停用(nil);正值照用;負值視同未設定。
+        if RecordingController.resolveWhisperIdleSec(nil) != 180 { fails.append("未設定應為 180(Eric 10/20 縮到 3 分)") }
+        if RecordingController.resolveWhisperIdleSec(0) != nil { fails.append("0 應停用(nil)") }
+        if RecordingController.resolveWhisperIdleSec(60) != 60 { fails.append("60 應照用") }
+        if RecordingController.resolveWhisperIdleSec(-5) != 180 { fails.append("負值應回預設 180") }
+
+        // ② 釋放閘。
+        let can = RecordingController.canUnloadWhisper
+        if !can(false, 0, .idle, true) { fails.append("閒置時應可釋放") }
+        if !can(false, 0, .finished, true) { fails.append("結束後應可釋放") }
+        if can(true, 0, .idle, true) { fails.append("轉稿中不可釋放") }
+        if can(false, 2, .idle, true) { fails.append("佇列未空不可釋放") }
+        if can(false, 0, .recording, true) { fails.append("錄音中開 live 不可釋放") }
+        if can(false, 0, .paused, true) { fails.append("暫停中開 live 不可釋放") }
+        // live 關閉時錄音中可以釋放(file 轉稿沒在跑,context 沒人用)。
+        if !can(false, 0, .recording, false) { fails.append("錄音中但 live 關閉應可釋放") }
+
+        return Result(name: "TR-27 whisper 閒置釋放策略", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "逾時解析 4 項 + 釋放閘 7 項全過" : fails.joined(separator: ";"))
+    }
 
     static func fileNameFormat() -> Result {
         var c = DateComponents(); c.year = 2026; c.month = 6; c.day = 22; c.hour = 14; c.minute = 30
@@ -290,6 +382,76 @@ public enum SelfTest {
         let ok = r1 && r2 && !r3 && !r4 && r5
         return Result(name: "Whisper 幻覺防呆(連續複讀≥3 次壓下)", passed: ok,
                       detail: ok ? "" : "r1=\(r1) r2=\(r2) r3=\(r3) r4=\(r4) r5=\(r5)")
+    }
+
+    // TR-28(#2485):會後重轉改 VAD 分塊——file profile 的切點/起點偏移/25 s 強制切/flush 尾塊,
+    // live profile 參數不變;塊內段落起點換算整檔絕對秒數。合成訊號:
+    // 10 s 語音｜1 s 靜音｜8 s 語音｜4 s 靜音｜32 s 語音(0.1 s 進料粒度 ⇒ 邊界對齊,數字可精算)。
+    static func whisperFileChunking() -> Result {
+        func block(_ n: Int, _ v: Float) -> [Float] { [Float](repeating: v, count: n) }
+        let r = VadChunker.rate
+        var signal: [Float] = []
+        signal += block(10 * r, 0.1); signal += block(1 * r, 0); signal += block(8 * r, 0.1)
+        signal += block(4 * r, 0); signal += block(32 * r, 0.1)
+        var fails: [String] = []
+        do {
+            let chunks = try WhisperCppFileProvider.chunk(signal)
+            // 期望:[0,10.8) 尾靜音切｜[10.8,19.8) 尾靜音切｜19.8～22.8 全靜音丟｜[22.8,47.8) 25 s 強制切｜[47.8,55) flush
+            let expect: [(start: Int, count: Int)] = [(0, 172_800), (172_800, 144_000), (364_800, 400_000), (764_800, 115_200)]
+            if chunks.count != expect.count {
+                fails.append("塊數 \(chunks.count) ≠ \(expect.count)")
+            } else {
+                for (i, (c, e)) in zip(chunks, expect).enumerated() where c.startOffset != e.start || c.samples.count != e.count {
+                    fails.append("塊\(i) 起點 \(c.startOffset)/長 \(c.samples.count) ≠ \(e.start)/\(e.count)")
+                }
+            }
+            if chunks.contains(where: { $0.samples.count > VadChunker.Profile.file.maxChunk }) { fails.append("有塊超過 25 s") }
+            if try !WhisperCppFileProvider.chunk(block(8_000, 0.1)).isEmpty { fails.append("<1 s 音訊應略過") }
+        } catch { fails.append("chunk 丟錯 \(error)") }
+        let live = VadChunker().profile
+        if live.silenceCut != 9_600 || live.maxChunk != 96_000 || live.minVoiced != 8_000 || live.idleDrop != 48_000 {
+            fails.append("live profile 參數變了")
+        }
+        let abs = WhisperCppFileProvider.absoluteStart(chunkOffset: 364_800, segStart: 1.25)
+        if Swift.abs(abs - 24.05) > 0.001 { fails.append("絕對秒數 \(abs) ≠ 24.05") }
+        return Result(name: "TR-28 會後重轉 VAD 分塊(切點/偏移/強制切/flush)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "4 塊 10.8/9.0/25.0/7.2 s,live 參數不變,絕對時間換算正確" : fails.joined(separator: ";"))
+    }
+
+    // UI-58(10/22 截圖抓到):載入舊稿的每句 time 要以錄音起點為基準——起點從檔名範本解析,解不出用 mtime 減時長。
+    static func transcriptLoadBaseTime() -> Result {
+        var fails: [String] = []
+        let cal = Calendar.current
+        if let d = Recording.startDate(fromFileName: "2026-10-22 1500 產品週會.m4a") {
+            let c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: d)
+            if !(c.year == 2026 && c.month == 10 && c.day == 22 && c.hour == 15 && c.minute == 0) { fails.append("檔名解析錯 \(c)") }
+        } else { fails.append("檔名範本解析失敗") }
+        if Recording.startDate(fromFileName: "錄音.m4a") != nil { fails.append("非範本檔名應回 nil") }
+        let end = Date(timeIntervalSince1970: 1_000_000)
+        let rec = Recording(id: UUID(), title: "x", url: URL(fileURLWithPath: "/tmp/隨便.m4a"), date: end, duration: 600, hasTranscript: true)
+        if abs(rec.startDate.timeIntervalSince1970 - 999_400) > 0.001 { fails.append("fallback 應=mtime−時長") }
+        let parsed = SRT.parse("1\n00:00:05,000 --> 00:00:07,000\n你: 測試\n")
+        if parsed.first?.start != 5 { fails.append("SRT start 應=5") }
+        return Result(name: "UI-58 載入舊稿時間以錄音起點為基準", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "檔名範本→15:00;非範本→nil;fallback=mtime−時長" : fails.joined(separator: ";"))
+    }
+
+    // AUD-37(#2523):麥克風輸入格式 guard(取樣率與聲道數都要 >0)+ ObjC 例外橋真的接得到 NSException。
+    static func micInputFormatGuard() -> Result {
+        var fails: [String] = []
+        if !MicCapture.isUsableInputFormat(sampleRate: 48_000, channels: 1) { fails.append("48k/1ch 應可用") }
+        if !MicCapture.isUsableInputFormat(sampleRate: 16_000, channels: 2) { fails.append("16k/2ch 應可用") }
+        if MicCapture.isUsableInputFormat(sampleRate: 48_000, channels: 0) { fails.append("0 ch 應擋下") }
+        if MicCapture.isUsableInputFormat(sampleRate: 0, channels: 1) { fails.append("0 Hz 應擋下") }
+        let caught = MPCatchObjCException {
+            NSException(name: .invalidArgumentException,
+                        reason: "required condition is false: 測試用斷言", userInfo: nil).raise()
+        }
+        if caught?.reason?.contains("required condition") != true { fails.append("MPCatchObjCException 沒接到 NSException") }
+        var ran = false
+        if MPCatchObjCException({ ran = true }) != nil || !ran { fails.append("沒例外時應跑完 block 且回 nil") }
+        return Result(name: "AUD-37 麥克風格式 guard + ObjC 例外橋", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "0 Hz／0 ch 擋下;NSException 被接住:\(caught?.name.rawValue ?? "")" : fails.joined(separator: ";"))
     }
 
     private final class ErrorBox: @unchecked Sendable { var error: Error? }
@@ -602,6 +764,262 @@ public enum SelfTest {
         return buf
     }
 
+    /// UI-36(BUG-28/#1680):結構化警示的繁中整句必須跟改版前寫死的字串**逐字相同**
+    /// ——CLI、state.json、終端電平表都還在讀這個(`deviceChangeWarning`),繁中 GUI
+    /// 也是查表查不到而回傳同一份模板。期望值是從 commit 8a84306 的原始碼抄進來的。
+    static func warningZhTWPinned() -> Result {
+        let expected: [(RecordingWarning, String)] = [
+            (.engineChangeDeferred, "逐字稿引擎將於本次錄音結束後生效"),
+            (.whisperModelMissing, "Whisper 模型未安裝 — 到設定下載後生效,暫用 macOS 原生引擎"),
+            (.cloudNotConfigured, "雲端引擎尚未設定,暫用 macOS 原生引擎"),
+            (.micSwitched(device: "Yeti Stereo Microphone"),
+             "已切換麥克風為「Yeti Stereo Microphone」,你軌(右)會有短暫空白"),
+            (.micSwitchFailed(device: "Yeti Stereo Microphone"),
+             "⚠️ 切換到「Yeti Stereo Microphone」失敗、原麥克風也起不來,你軌(右)現在收不到音 — 請停止錄音、重選裝置再錄"),
+            (.micReconnected(reason: .signalLost, device: "Yeti Stereo Microphone"),
+             "偵測到你的麥克風中斷(你軌訊號中斷),已自動重接「Yeti Stereo Microphone」"),
+            (.micReconnected(reason: .deviceRemoved, device: nil),
+             "偵測到你的麥克風中斷(選用的麥克風已移除),已自動重接「系統預設」"),
+            (.sysRebuildMaybeStillSilent,
+             "已嘗試自動重建對方軌,但可能仍收不到 — 若用藍牙耳機當輸出會走 HFP/電話模式而擷取不到,請改用內建喇叭或有線輸出"),
+            (.sysRestarted(reason: .signalLost), "偵測到系統音訊擷取中斷(對方軌訊號中斷),已自動重新啟動"),
+            (.sysRestarted(reason: .persistentSilence), "偵測到系統音訊擷取中斷(對方軌持續無聲),已自動重新啟動"),
+            (.sysRestarted(reason: .outputDeviceChanged), "偵測到系統音訊擷取中斷(系統輸出裝置變更),已自動重新啟動"),
+            (.micSilentBluetooth,
+             "⚠️ 你選的是藍牙麥克風,整場可能收不到聲音(常被會議 app 佔住或掉窄頻)— 請到設定改用內建或 USB 麥克風"),
+            (.micSilent, "你的麥克風似乎沒收到聲音 — 請到設定確認「你的麥克風」選對裝置"),
+            (.sysSilent,
+             "⚠️ 對方(系統音訊)沒收到聲音 — 若用藍牙耳機當輸出,通話會走 HFP/電話模式而擷取不到對方,請改用內建喇叭或有線輸出;並確認會議音訊在這台 Mac 上播放"),
+            (.deviceChanged, "偵測到音訊裝置變更,錄音續行中,請確認狀態")
+        ]
+        var fails: [String] = []
+        for (w, want) in expected where w.zhTW != want {
+            fails.append("\(want.prefix(12))… → \(w.zhTW.prefix(12))…")
+        }
+        // 模板的佔位符數量要跟參數個數一致,否則 UI 會顯示殘缺字串。
+        for (w, _) in expected where L10nFormat.placeholderCount(w.template) != w.arguments.count {
+            fails.append("佔位符數不符:\(w.template.prefix(12))…")
+        }
+        // 參數少給時不可當機,多餘的佔位符原樣留著(UI 端會因此退回繁中模板)。
+        let short = L10nFormat.fill("偵測到你的麥克風中斷(%@),已自動重接「%@」", ["你軌訊號中斷"])
+        if short != "偵測到你的麥克風中斷(你軌訊號中斷),已自動重接「%@」" { fails.append("少給參數:\(short)") }
+        return Result(name: "UI-36 警示繁中原文釘字(BUG-28)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "\(expected.count) 句逐字相同 + 佔位符數一致"
+                                            : fails.joined(separator: ";"))
+    }
+
+    /// UI-41(BUG-28/B2+題 C):自動收起與再跳門檻的純決策。
+    static func warningAutoDismissRules() -> Result {
+        var fails: [String] = []
+        // ① 只有對方軌無聲那兩種會被聲音收掉。
+        let clears: [RecordingWarning] = [.sysSilent, .sysRebuildMaybeStillSilent]
+        let keeps: [RecordingWarning] = [
+            .engineChangeDeferred, .whisperModelMissing, .cloudNotConfigured,
+            .micSwitched(device: "X"), .micSwitchFailed(device: "X"),
+            .micReconnected(reason: .signalLost, device: "X"),
+            .sysRestarted(reason: .persistentSilence),
+            .micSilentBluetooth, .micSilent, .deviceChanged
+        ]
+        for w in clears where !w.clearsWhenSysSignalReturns { fails.append("該收沒收:\(w.template.prefix(8))") }
+        for w in keeps where w.clearsWhenSysSignalReturns { fails.append("不該收卻收:\(w.template.prefix(8))") }
+        if clears.count + keeps.count != 12 { fails.append("警示種類數變了,案例要補") }
+
+        // ② 再跳門檻:沒自動收起過照舊 12 秒且看 silentFor;收起過改看真訊號與 60 秒。
+        let before = SysTrackWatchdog.silentWarnInputs(autoDismissed: false, silentFor: 13,
+                                                       realSilentFor: 99, warnAfter: 12, rewarnAfter: 60)
+        if before.silentFor != 13 || before.warnAfter != 12 { fails.append("收起前門檻不對") }
+        let after = SysTrackWatchdog.silentWarnInputs(autoDismissed: true, silentFor: 25,
+                                                      realSilentFor: 40, warnAfter: 12, rewarnAfter: 60)
+        if after.silentFor != 40 || after.warnAfter != 60 { fails.append("收起後門檻不對") }
+        // 收起後安靜 40 秒(但重建把 silentFor 洗成 25)不該跳;滿 60 秒才跳。
+        if SysTrackWatchdog.shouldWarnSilent(elapsed: 300, silentFor: after.silentFor,
+                                             alreadyWarned: false, warnAfter: after.warnAfter) {
+            fails.append("收起後 40 秒就跳了")
+        }
+        let due = SysTrackWatchdog.silentWarnInputs(autoDismissed: true, silentFor: 5,
+                                                    realSilentFor: 61, warnAfter: 12, rewarnAfter: 60)
+        if !SysTrackWatchdog.shouldWarnSilent(elapsed: 300, silentFor: due.silentFor,
+                                              alreadyWarned: false, warnAfter: due.warnAfter) {
+            fails.append("收起後滿 60 秒沒跳")
+        }
+
+        // ③ 重建橫幅:已武裝→合併訊息;觀察期內的持續無聲重建→不跳;其餘照舊。
+        for reason in SysRebuildReason.allCases {
+            for grace in [true, false] {
+                let warned = SysTrackWatchdog.rebuildBanner(silentWarned: true, reason: reason, inRewarnGrace: grace)
+                if warned != .sysRebuildMaybeStillSilent { fails.append("已武裝該給合併訊息") }
+                let notWarned = SysTrackWatchdog.rebuildBanner(silentWarned: false, reason: reason, inRewarnGrace: grace)
+                let want: RecordingWarning? = (grace && reason == .persistentSilence) ? nil : .sysRestarted(reason: reason)
+                if notWarned != want { fails.append("重建橫幅不對:\(reason) grace=\(grace)") }
+            }
+        }
+        return Result(name: "UI-41 無聲橫幅自動收起+再跳門檻(BUG-28)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "12 種收起判定 + 門檻切換 + 重建橫幅 12 組合全對"
+                                            : fails.joined(separator: ";"))
+    }
+
+    /// QUIT-12/13(BUG-27 殘留/#1697):退出前要不要問、以及「上次未完成」標記的修剪。
+    static func quitTranscriptionGuard() -> Result {
+        var fails: [String] = []
+        // ① 要不要先問:轉稿中或有排隊都要問;都沒有才直接走。
+        let ask = RecordingController.shouldConfirmQuitDuringTranscription
+        if !ask(true, 0)  { fails.append("轉稿中沒問") }
+        if !ask(false, 1) { fails.append("有排隊沒問") }
+        if !ask(true, 2)  { fails.append("轉稿中+排隊沒問") }
+        if ask(false, 0)  { fails.append("沒事卻問") }
+
+        // ② 標記修剪:檔案還在且還沒逐字稿才留;重複要去重。
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mp_int_\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let pending = dir.appendingPathComponent("a.m4a")       // 還沒轉 → 留
+            let done = dir.appendingPathComponent("b.m4a")          // 已有逐字稿 → 清
+            let gone = dir.appendingPathComponent("c.m4a")          // 檔案不在 → 清
+            try Data().write(to: pending); try Data().write(to: done)
+            try Data().write(to: dir.appendingPathComponent("b.txt"))
+            let kept = RecordingController.pruneInterrupted(
+                saved: [pending.path, done.path, gone.path, pending.path]) { path in
+                let url = URL(fileURLWithPath: path)
+                guard FileManager.default.fileExists(atPath: path) else { return false }
+                let txt = url.deletingPathExtension().appendingPathExtension("txt")
+                return !FileManager.default.fileExists(atPath: txt.path)
+            }
+            if kept != [pending.path] { fails.append("修剪結果=\(kept.map { ($0 as NSString).lastPathComponent })") }
+        } catch {
+            fails.append("\(error)")
+        }
+        return Result(name: "QUIT-12/13 轉稿中退出的詢問與未完成標記", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "詢問 4 種組合 + 標記修剪(留 1 清 2 去重)全對"
+                                            : fails.joined(separator: ";"))
+    }
+
+    /// CORR-03/04(#2417):建議驗證、套用、還原、分批的純決策。
+    static func correctionRules() -> Result {
+        var fails: [String] = []
+        let segs = ["我們今天要討論竹子稿的格式", "請把錄音檔寄給我", "他目前在台積店做製程整合"]
+        let raw = [
+            CorrectionSuggestion(segment: 0, original: " 竹子稿 ", suggestion: "逐字稿", reason: "同音"),   // trim 後有效
+            CorrectionSuggestion(segment: 0, original: "竹子稿", suggestion: "逐字稿", reason: "重複"),     // 去重
+            CorrectionSuggestion(segment: 0, original: "竹子稿格", suggestion: "逐字稿", reason: "多一字"), // 正對照:不在原文
+            CorrectionSuggestion(segment: 1, original: "錄音檔", suggestion: "錄音檔", reason: "沒改"),     // 等於沒改
+            CorrectionSuggestion(segment: 2, original: "台積店", suggestion: "台積電", reason: "範圍外"),   // 段號不在批次
+            CorrectionSuggestion(segment: 9, original: "x", suggestion: "y", reason: "越界"),
+            CorrectionSuggestion(segment: 1, original: "", suggestion: "y", reason: "空"),
+        ]
+        let kept = CorrectionRules.validate(raw, segments: segs, range: 0..<2)
+        if kept.count != 1 || kept.first?.original != "竹子稿" || kept.first?.segment != 0 {
+            fails.append("validate 留下 \(kept.map { "\($0.segment):\($0.original)" })(要只留 0:竹子稿)")
+        }
+        // 正對照:同一則若 original 多一個字,必須被丟
+        let bad = CorrectionRules.validate([CorrectionSuggestion(segment: 0, original: "竹子稿的格式x", suggestion: "逐字稿", reason: "")], segments: segs, range: 0..<1)
+        if !bad.isEmpty { fails.append("多一字的建議沒被丟") }
+        // 套用/還原
+        let s = kept[0]
+        guard let applied = CorrectionRules.apply(s, to: segs[0]) else { fails.append("apply 回 nil"); return Result(name: "CORR-03/04 校正建議驗證/套用/還原", passed: false, detail: fails.joined(separator: ";")) }
+        if applied != "我們今天要討論逐字稿的格式" { fails.append("apply 結果 \(applied)") }
+        if CorrectionRules.revert(s, in: applied) != segs[0] { fails.append("revert 沒還原") }
+        if CorrectionRules.apply(s, to: "這段已經被人改掉了") != nil { fails.append("段落已改仍套用") }
+        // 只換第一個
+        let twice = CorrectionRules.apply(CorrectionSuggestion(segment: 0, original: "稿", suggestion: "稿稿", reason: ""), to: "稿A稿")
+        if twice != "稿稿A稿" { fails.append("不是只換第一個:\(twice ?? "nil")") }
+        // 分批
+        let b = CorrectionRules.batches(count: 250, size: 100)
+        if b != [0..<100, 100..<200, 200..<250] { fails.append("batches \(b)") }
+        if !CorrectionRules.batches(count: 0, size: 100).isEmpty { fails.append("0 段應無批次") }
+        return Result(name: "CORR-03/04 校正建議驗證/套用/還原", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "驗證 7 案(留 1)+正對照+套用/還原/只換第一個+分批" : fails.joined(separator: ";"))
+    }
+
+    /// SRT 來回(#2417):make → parse 要還原講者、文字、時間。
+    static func srtRoundTrip() -> Result {
+        let lines = [
+            TranscriptLine(isYou: false, time: Date(), text: "你好,今天要討論逐字稿", isFinal: true, start: 0.5, duration: 1.5),
+            TranscriptLine(isYou: true, time: Date(), text: "好的: 沒問題", isFinal: true, start: 2.0, duration: 0.8),
+        ]
+        let back = SRT.parse(SRT.make(from: lines))
+        let ok = back.count == 2 && back[0].isYou == false && back[0].text == lines[0].text
+            && back[1].isYou == true && back[1].text == lines[1].text
+            && abs(back[0].start - 0.5) < 0.002 && abs(back[1].duration - 0.8) < 0.002
+        return Result(name: "SRT 來回(make→parse)", passed: ok,
+                      detail: ok ? "2 行講者/文字/時間一致" : "\(back.map { "\($0.isYou) \($0.text) \($0.start)" })")
+    }
+
+    /// CORR-06/13 靜態部分:提示詞只含段號＋文字;CLI 參數有該有的、沒有禁用的。
+    static func correctionPromptAndArgs() -> Result {
+        var fails: [String] = []
+        let segs = ["第一段", "第二段", "第三段"]
+        let user = CorrectionPrompt.user(segments: segs, range: 1..<3, language: .zhTW)
+        if !user.contains("1: 第二段") || !user.contains("2: 第三段") { fails.append("提示詞缺段落") }
+        if user.contains("第一段") { fails.append("批次外的段落被送出") }
+        if user.contains("/Users") || user.contains(".m4a") { fails.append("提示詞含路徑/檔名") }
+        let args = ClaudeCLIProvider.arguments(userPrompt: user, systemPrompt: "S", model: nil)
+        let joined = args.joined(separator: " ")
+        for need in ["-p", "--output-format json", "--json-schema", "--setting-sources ", "--system-prompt S", "--tools StructuredOutput", "--max-turns 1", "--no-session-persistence", "--strict-mcp-config"] where !joined.contains(need) {
+            fails.append("缺 \(need)")
+        }
+        if let i = args.firstIndex(of: "--setting-sources"), args[i + 1] != "" { fails.append("setting-sources 不是空字串") }
+        for bad in ClaudeCLIProvider.forbiddenFlags where joined.contains(bad) { fails.append("出現禁用旗標 \(bad)") }
+        if let i = args.firstIndex(of: "--tools"), args[i + 1] == "" { fails.append("--tools 空字串(會灌 140k)") }
+        let withModel = ClaudeCLIProvider.arguments(userPrompt: "u", systemPrompt: "s", model: "x")
+        if !withModel.contains("--model") { fails.append("有指定 model 卻沒帶") }
+        return Result(name: "CORR-06/13 提示詞範圍+CLI 參數鎖定", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "提示詞只含批次內段落;9 個必要旗標齊、禁用旗標無" : fails.joined(separator: ";"))
+    }
+
+    /// CORR-09:CLI 輸出解析——正常/未登入/非 JSON/缺欄位,訊息不含原始輸出。
+    static func correctionParseOutput() -> Result {
+        var fails: [String] = []
+        let good = """
+        {"type":"result","structured_output":{"corrections":[{"segment":0,"original":"竹子稿","suggestion":"逐字稿","reason":"同音"}]},"usage":{"input_tokens":2,"cache_creation_input_tokens":1500,"cache_read_input_tokens":0,"output_tokens":120},"duration_ms":2300}
+        """
+        do {
+            let r = try ClaudeCLIProvider.parseOutput(good, exitCode: 0)
+            if r.suggestions.count != 1 || r.suggestions[0].suggestion != "逐字稿" { fails.append("正常輸出解析錯") }
+            if r.inputTokens != 1502 || r.outputTokens != 120 || r.durationMs != 2300 { fails.append("usage 錯 \(r.inputTokens)/\(r.outputTokens)/\(r.durationMs)") }
+        } catch { fails.append("正常輸出丟錯 \(error)") }
+        do { _ = try ClaudeCLIProvider.parseOutput("Not logged in · Please run /login", exitCode: 1); fails.append("未登入沒丟") }
+        catch CorrectionError.notLoggedIn {} catch { fails.append("未登入丟錯型別 \(error)") }
+        do { _ = try ClaudeCLIProvider.parseOutput("garbage garbage SECRET-LINE", exitCode: 0); fails.append("非 JSON 沒丟") }
+        catch CorrectionError.badOutput(let m) { if m.contains("SECRET-LINE") { fails.append("訊息含原始輸出") } }
+        catch { fails.append("非 JSON 丟錯型別 \(error)") }
+        do { _ = try ClaudeCLIProvider.parseOutput("{\"type\":\"result\",\"result\":\"x\"}", exitCode: 0); fails.append("缺欄位沒丟") }
+        catch CorrectionError.badOutput {} catch { fails.append("缺欄位丟錯型別 \(error)") }
+        return Result(name: "CORR-09 CLI 輸出解析", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "正常/未登入/非 JSON/缺欄位 4 案,訊息不含原文" : fails.joined(separator: ";"))
+    }
+
+    /// AUD-35(BUG-29/#2411):tap 排除清單的純決策＋自己的 process object 查得到。
+    static func tapExcludesSelf() -> Result {
+        var fails: [String] = []
+        let a = AudioObjectID(100), b = AudioObjectID(200)
+        if SystemAudioCapture.exclusionList(own: a, extra: [b, a, .unknown]) != [a, b] { fails.append("去重/過濾 unknown 錯") }
+        if SystemAudioCapture.exclusionList(own: nil, extra: [b]) != [b] { fails.append("own 為 nil 時應只剩 extra") }
+        if !SystemAudioCapture.exclusionList(own: nil, extra: []).isEmpty { fails.append("空清單應為空") }
+        // 自己的 process object:測試行程未必有音訊物件,查得到就要是合法 id;查不到只記不算錯。
+        let own = SystemAudioCapture.processObject(forPID: ProcessInfo.processInfo.processIdentifier)
+        if let own, own.isUnknown { fails.append("翻譯回 unknown 卻沒過濾") }
+        return Result(name: "AUD-35 tap 排除自己的行程(純決策)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "排除清單 3 案全對;本行程 process object=\(own.map { "\($0)" } ?? "無(測試行程未用音訊)")" : fails.joined(separator: ";"))
+    }
+
+    /// DBG-01(#2412):指令切分與結果檔路徑政策(純函式)。
+    static func debugCommandParsing() -> Result {
+        var fails: [String] = []
+        let sep = String(DebugCommand.separator)
+        if DebugCommand.parse("state" + sep + "/tmp/s.json") != ["state", "/tmp/s.json"] { fails.append("基本切分") }
+        if DebugCommand.parse("a" + sep + sep + "b") != ["a", "", "b"] { fails.append("空參數要保留") }
+        if !DebugCommand.parse("").isEmpty { fails.append("空字串應為 []") }
+        let home = "/Users/x", tmp = "/var/folders/ab/T/"
+        for ok in ["/tmp/a.json", "/private/tmp/a.json", "/var/folders/ab/T/x.json", "/Users/x/Desktop/r.json"]
+            where !DebugCommand.isAllowedResultPath(ok, home: home, tmp: tmp) { fails.append("應允許 \(ok)") }
+        for bad in ["relative.json", "/etc/passwd", "/Users/x/../y/r.json", "/Users/other/r.json", "/tmp/../etc/x", "/Library/x.json", ""]
+            where DebugCommand.isAllowedResultPath(bad, home: home, tmp: tmp) { fails.append("應拒絕 \(bad)") }
+        return Result(name: "DBG-01 控制通道指令切分與結果檔路徑", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "切分 3 案、路徑允許 4 案/拒絕 7 案" : fails.joined(separator: ";"))
+    }
+
     private static func rms(_ buf: AVAudioPCMBuffer, _ channel: Int) -> Float {
         guard let data = buf.floatChannelData, Int(buf.format.channelCount) > channel else { return 0 }
         let n = Int(buf.frameLength); guard n > 0 else { return 0 }
@@ -609,4 +1027,243 @@ public enum SelfTest {
         for i in 0..<n { sum += ch[i] * ch[i] }
         return sqrt(sum / Float(n))
     }
+
+    // MARK: - CAL(#2407 行事曆觸發錄音第一階段)
+
+    /// CAL-01:事件篩選純函式——勾選日曆、關鍵字(不分大小寫)、排除全天/取消/已開始、去重、排序、關鍵字解析。
+    static func meetingReminderSelection() -> Result {
+        var fails: [String] = []
+        let now = Date(timeIntervalSince1970: 1_800_000_000)   // 固定基準
+        func ev(_ id: String, _ cal: String, _ title: String, startIn: TimeInterval, allDay: Bool = false, cancelled: Bool = false) -> CalendarEventInfo {
+            CalendarEventInfo(id: id, calendarID: cal, title: title, start: now.addingTimeInterval(startIn),
+                              end: now.addingTimeInterval(startIn + 3600), isAllDay: allDay, isCancelled: cancelled)
+        }
+        var s = ReminderSettings()
+        s.enabled = true
+        s.calendarIDs = ["primary"]
+        s.keywords = ["面談", "Interview", "相談室"]
+        let events = [
+            ev("a", "primary", "大叔的人生相談室 (某人)", startIn: 3600),          // 命中
+            ev("b", "primary", "Panel INTERVIEW with X", startIn: 1800),          // 命中(大小寫)
+            ev("c", "family", "面談 Y", startIn: 900),                            // 日曆沒勾
+            ev("d", "primary", "午餐", startIn: 600),                             // 關鍵字不中
+            ev("e", "primary", "面談 全天", startIn: 7200, allDay: true),          // 全天
+            ev("f", "primary", "面談 取消", startIn: 7200, cancelled: true),       // 取消
+            ev("g", "primary", "面談 已開始", startIn: -60),                       // 已開始
+            ev("b", "primary", "Panel INTERVIEW with X", startIn: 1800),          // 重複
+            ev("h", "primary", "面談 太遠", startIn: 25 * 3600),                   // 超出 24h
+        ]
+        let planned = MeetingReminderRules.select(events: events, settings: s, now: now)
+        if planned.map(\.event.id) != ["b", "a"] { fails.append("應只留 b、a 且依提醒時刻排序,得 \(planned.map(\.event.id))") }
+        if let b = planned.first, b.fireAt != now.addingTimeInterval(1800 - 120) { fails.append("提醒時刻應=開始−2 分") }
+        if let b = planned.first, b.key != "b@2027-01-15T08:30:00Z" { fails.append("鍵格式 id@UTC-ISO,得 \(b.key)") }
+        var off = s; off.enabled = false
+        if !MeetingReminderRules.select(events: events, settings: off, now: now).isEmpty { fails.append("關閉時應回空") }
+        // 睡醒才算到:提醒時刻已過但未開始 → 仍回傳(排程器立刻發)
+        var late = s; late.leadMinutes = 30
+        let soon = MeetingReminderRules.select(events: [ev("z", "primary", "面談 快到", startIn: 300)], settings: late, now: now)
+        if soon.count != 1 || soon[0].fireAt >= now { fails.append("已過提醒時刻但未開始應仍回傳且 fireAt<now") }
+        // 關鍵字解析
+        let parsed = ReminderSettings.parseKeywords(" 會議, 面談，interview;Interview\n\n call ,")
+        if parsed != ["會議", "面談", "interview", "call"] { fails.append("關鍵字解析/去重錯:\(parsed)") }
+        if ReminderSettings.defaultKeywords.contains(where: { ["同意書", "人選", "HH"].contains($0) }) { fails.append("預設關鍵字不得帶業務詞") }
+        if MeetingReminderRules.matches(title: "x", keywords: []) { fails.append("空關鍵字清單不應命中") }
+        return Result(name: "CAL-01 事件篩選(日曆/關鍵字/全天/取消/已開始/去重/排序)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "9 事件→2 命中;關閉回空;睡醒補發;關鍵字解析 4 項" : fails.joined(separator: ";"))
+    }
+
+    /// CAL-02:絕對時間 → 雙時區顯示;Berlin 偏移字串與 Taipei 牆鐘是同一瞬間。
+    static func dualTimeZoneFormat() -> Result {
+        var fails: [String] = []
+        let iso = ISO8601DateFormatter()
+        guard let summer = iso.date(from: "2026-10-20T08:30:00+02:00"),      // 相談室事件 API 回的樣子
+              let winter = iso.date(from: "2026-12-01T07:30:00+01:00"),
+              let berlin = TimeZone(identifier: "Europe/Berlin"),
+              let shanghai = TimeZone(identifier: "Asia/Shanghai"),
+              let la = TimeZone(identifier: "America/Los_Angeles") else {
+            return Result(name: "CAL-02 雙時區顯示", passed: false, detail: "測資建不起來")
+        }
+        let p1 = DualTimeZoneFormat.parts(summer, local: DualTimeZoneFormat.taipei)
+        if !p1.isSame || DualTimeZoneFormat.zhTW(p1) != "14:30" { fails.append("本機台北應只顯示 14:30,得 \(DualTimeZoneFormat.zhTW(p1))") }
+        let p2 = DualTimeZoneFormat.parts(summer, local: berlin)
+        if p2.isSame || DualTimeZoneFormat.zhTW(p2) != "14:30 台北 ／ 08:30 Berlin (UTC+2)" { fails.append("夏令時應為 14:30 台北 ／ 08:30 Berlin (UTC+2),得 \(DualTimeZoneFormat.zhTW(p2))") }
+        let p3 = DualTimeZoneFormat.parts(winter, local: berlin)
+        if DualTimeZoneFormat.zhTW(p3) != "14:30 台北 ／ 07:30 Berlin (UTC+1)" { fails.append("冬令時應為 07:30 Berlin (UTC+1),得 \(DualTimeZoneFormat.zhTW(p3))") }
+        let p4 = DualTimeZoneFormat.parts(summer, local: shanghai)
+        if !p4.isSame { fails.append("同偏移(上海)應視為同一時鐘") }
+        let p5 = DualTimeZoneFormat.parts(summer, local: la)
+        if !DualTimeZoneFormat.zhTW(p5).hasSuffix("Los Angeles (UTC-7)") { fails.append("底線城市名應換空白並帶 UTC 偏移,得 \(p5.localZone)") }
+        // 反過來:事件 Berlin 本機 Taipei(同一瞬間,只是顯示)
+        let p6 = DualTimeZoneFormat.parts(winter, local: DualTimeZoneFormat.taipei, includeDate: true)
+        if p6.reference != "12/01 14:30" { fails.append("含日期格式應為 12/01 14:30,得 \(p6.reference)") }
+        return Result(name: "CAL-02 雙時區顯示(同偏移單顯/夏冬令時/城市名)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "6 組:台北單顯、Berlin 夏/冬、上海同偏移、LA 城市名、含日期" : fails.joined(separator: ";"))
+    }
+
+    /// CAL-05:已發紀錄落檔——空/寫/查/過期清理/壞檔視為空。
+    static func firedReminderStore() -> Result {
+        var fails: [String] = []
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("myparrot-cal05-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = FiredReminderStore(url: dir.appendingPathComponent("reminders-fired.json"))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        if !store.load(now: now).isEmpty { fails.append("檔不存在應為空") }
+        if store.contains("k1", now: now) { fails.append("空檔不應含 k1") }
+        do {
+            try store.markFired("k1", at: now)
+            if !store.contains("k1", now: now) { fails.append("寫入後應含 k1") }
+            try store.markFired("k2", at: now.addingTimeInterval(60))
+            let all = store.load(now: now.addingTimeInterval(60))
+            if all.count != 2 { fails.append("應有 2 鍵,得 \(all.count)") }
+            // 8 天後 k1、k2 都過期;新鍵進來時順手清掉
+            let later = now.addingTimeInterval(8 * 86400)
+            let afterPrune = try store.markFired("k3", at: later)
+            if afterPrune.keys.sorted() != ["k3"] { fails.append("過期鍵應被清,得 \(afterPrune.keys.sorted())") }
+            // 檔內容是 launchd 腳本看得懂的形狀
+            let raw = try String(contentsOf: store.url, encoding: .utf8)
+            if !raw.contains("\"fired\"") || !raw.contains("\"k3\"") || !raw.contains("\"version\"") { fails.append("JSON 形狀不對:\(raw.prefix(120))") }
+        } catch { fails.append("寫檔失敗:\(error)") }
+        // 壞檔
+        try? Data("not json".utf8).write(to: store.url)
+        if !store.load(now: now).isEmpty || !store.isCorrupt { fails.append("壞檔應視為空且 isCorrupt") }
+        if FiredReminderStore.prune(["a": now, "b": now.addingTimeInterval(-8 * 86400)], now: now, retention: 7 * 86400).keys.sorted() != ["a"] { fails.append("prune 純函式錯") }
+        if !FiredReminderStore.defaultURL.path.hasSuffix(".config/myparrot/reminders-fired.json") && getenv("MYPARROT_CONFIG_DIR") == nil { fails.append("預設路徑應在 ~/.config/myparrot") }
+        return Result(name: "CAL-05 已發紀錄(寫/查/7 天清理/壞檔視為空)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "空→寫 2→8 天後清成 1;壞檔視為空;JSON 形狀含 version/fired" : fails.joined(separator: ";"))
+    }
+
+    /// CAL-08/09/11:死軌規則、沒人說話量尺(自適應底噪 +12 dB)、30 分鐘靜音建議停(只發一次、再武裝)。
+    static func speechActivityAndAlarms() -> Result {
+        var fails: [String] = []
+        // ① 死軌規則
+        if DeadTrackRule.shouldAlarm(elapsed: 179, everHadSignal: false, alreadyAlarmed: false) { fails.append("179 秒不該告警") }
+        if !DeadTrackRule.shouldAlarm(elapsed: 180, everHadSignal: false, alreadyAlarmed: false) { fails.append("180 秒從頭無訊號該告警") }
+        if DeadTrackRule.shouldAlarm(elapsed: 300, everHadSignal: true, alreadyAlarmed: false) { fails.append("有過訊號不該告警") }
+        if DeadTrackRule.shouldAlarm(elapsed: 300, everHadSignal: false, alreadyAlarmed: true) { fails.append("只發一次") }
+
+        // ② 量尺:每秒 12 筆
+        let dt: TimeInterval = 1.0 / 12
+        func feed(_ est: inout SpeechActivityEstimator, _ levels: [Float], from t0: TimeInterval) -> (speech: Int, t: TimeInterval) {
+            var t = t0, n = 0
+            for v in levels { if est.observe(level: v, at: t) { n += 1 }; t += dt }
+            return (n, t)
+        }
+        // (a) 純底噪 0.008(≈實測 -54 dBFS 乘 4 倍增益)60 秒 → 0 筆說話;底噪估到 ≈0.008
+        var est = SpeechActivityEstimator()
+        var r = feed(&est, Array(repeating: 0.008, count: 720), from: 0)
+        if r.speech > 1 { fails.append("純底噪不該算說話(前 1 筆用下限門檻可容忍),得 \(r.speech)") }
+        if abs(est.noiseFloor - 0.008) > 0.0001 { fails.append("底噪應≈0.008,得 \(est.noiseFloor)") }
+        // (b) 底噪上疊說話 0.1(+22 dB)24 筆 → 全算說話
+        r = feed(&est, Array(repeating: 0.1, count: 24), from: r.t)
+        if r.speech != 24 { fails.append("說話 24 筆應全命中,得 \(r.speech)") }
+        // (c) 底噪慢漂到 0.012(+3.5 dB)不算說話
+        r = feed(&est, (0..<720).map { 0.008 + 0.004 * Float($0) / 720 }, from: r.t)
+        if r.speech != 0 { fails.append("底噪慢漂不該算說話,得 \(r.speech)") }
+        // (d) 全零軌:底噪＝下限,門檻 0.002;0 不算說話、0.01 算
+        var zero = SpeechActivityEstimator()
+        r = feed(&zero, Array(repeating: 0, count: 120), from: 0)
+        if r.speech != 0 || zero.noiseFloor != zero.floorMin { fails.append("全零軌底噪應=下限且不算說話") }
+        if !zero.observe(level: 0.01, at: r.t) { fails.append("全零軌上 0.01 應算說話") }
+        // (d2) 底噪 0.008 中夾一個全零 buffer(tap 重建瞬間):底噪不該掉到下限,之後的底噪也不該被當成說話
+        var glitch = SpeechActivityEstimator()
+        _ = feed(&glitch, Array(repeating: 0.008, count: 120), from: 0)
+        _ = glitch.observe(level: 0, at: 10)
+        if glitch.noiseFloor < 0.007 { fails.append("零 buffer 不該參與底噪估計,得 \(glitch.noiseFloor)") }
+        r = feed(&glitch, Array(repeating: 0.011, count: 120), from: 10.1)
+        if r.speech != 0 { fails.append("零 buffer 後的房間底噪(+2.8 dB)不該算說話,得 \(r.speech)") }
+        // (e) 連講 70 秒不喘氣:5 分鐘視窗的底噪不該被講話頂高(60 秒視窗會)
+        var talk = SpeechActivityEstimator()
+        _ = feed(&talk, Array(repeating: 0.008, count: 120), from: 0)           // 10 秒底噪
+        r = feed(&talk, Array(repeating: 0.1, count: 840), from: 10)              // 70 秒連講
+        if r.speech != 840 { fails.append("70 秒連講應全算說話,得 \(r.speech)") }
+        var short = SpeechActivityEstimator(windowSeconds: 60)
+        _ = feed(&short, Array(repeating: 0.008, count: 120), from: 0)
+        let rs = feed(&short, Array(repeating: 0.1, count: 840), from: 10)
+        if rs.speech >= 840 { fails.append("對照組:60 秒視窗應該會漏(證明 5 分鐘視窗有差)") }
+
+        // ③ 30 分鐘靜音建議停:只發一次,恢復說話再武裝;t 是錄音經過秒數(暫停不計由呼叫端保證)
+        var rule = SilenceStopRule(after: 1800)
+        var fired: [TimeInterval] = []
+        var t: TimeInterval = 0
+        while t <= 1900 { if rule.observe(anySpeech: false, at: t) { fired.append(t) }; t += 1 }
+        if fired != [1800] { fails.append("應在 1800 秒發一次,得 \(fired)") }
+        _ = rule.observe(anySpeech: true, at: 2000)
+        fired = []
+        t = 2001
+        while t <= 3900 { if rule.observe(anySpeech: false, at: t) { fired.append(t) }; t += 1 }
+        if fired != [3800] { fails.append("再武裝後應在 3800 秒再發一次,得 \(fired)") }
+        return Result(name: "CAL-08/09/11 死軌規則+沒人說話量尺+30 分鐘建議停", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "死軌 4 案;量尺 底噪/說話/慢漂/全零/零 buffer 不拉底噪/連講 70 秒(5 分視窗 vs 60 秒對照);建議停 1800→再武裝→3800" : fails.joined(separator: ";"))
+    }
+
+    /// CAL-07:外部通知指令——環境變數、退出碼、逾時殺整組、空指令不跑。
+    static func externalNotifyCommand() -> Result {
+        var fails: [String] = []
+        let iso = ISO8601DateFormatter()
+        guard let start = iso.date(from: "2026-10-20T08:30:00+02:00"), let berlin = TimeZone(identifier: "Europe/Berlin") else {
+            return Result(name: "CAL-07 外部通知指令", passed: false, detail: "測資建不起來")
+        }
+        let env = ExternalNotifyCommand.environment(title: "面談 X", start: start, local: berlin, base: ["PATH": "/usr/bin:/bin"])
+        if env["MYPARROT_EVENT_TITLE"] != "面談 X" { fails.append("標題變數") }
+        if env["MYPARROT_START_ISO"] != "2026-10-20T06:30:00Z" { fails.append("ISO 應為 UTC,得 \(env["MYPARROT_START_ISO"] ?? "nil")") }
+        if env["MYPARROT_START_LOCAL"] != "10/20 08:30" { fails.append("本機時間變數,得 \(env["MYPARROT_START_LOCAL"] ?? "nil")") }
+        if env["MYPARROT_START_TAIPEI"] != "10/20 14:30" { fails.append("台北時間變數,得 \(env["MYPARROT_START_TAIPEI"] ?? "nil")") }
+        if env["PATH"] != "/usr/bin:/bin" { fails.append("base 環境應保留") }
+        let okOut = ExternalNotifyCommand.run("test \"$MYPARROT_EVENT_TITLE\" = '面談 X'", environment: env)
+        if !okOut.ok { fails.append("子行程應讀到變數且 exit 0,得 \(okOut)") }
+        let bad = ExternalNotifyCommand.run("exit 3", environment: env)
+        if bad.exitCode != 3 || bad.timedOut { fails.append("exit 3 應回 3,得 \(bad)") }
+        let t0 = Date()
+        let slow = ExternalNotifyCommand.run("sleep 5; sleep 5", environment: env, timeout: 0.4)
+        let took = Date().timeIntervalSince(t0)
+        if !slow.timedOut || took > 3 { fails.append("逾時應在 0.4 秒殺掉,得 \(slow) 耗時 \(took)") }
+        if !ExternalNotifyCommand.run("   ", environment: env).ok { fails.append("空指令應視為 ok 不跑") }
+        return Result(name: "CAL-07 外部通知指令(環境變數/退出碼/逾時殺組/空指令)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "4 變數正確;exit 3;sleep 逾時 \(String(format: "%.2f", took))s 殺掉;空指令不跑" : fails.joined(separator: ";"))
+    }
+
+    /// #949 配套:CLI 正在錄的探測(pid 檔活著才算)。
+    static func cliRecordingProbe() -> Result {
+        var fails: [String] = []
+        if CLIRecordingProbe.parsePID("123\n") != 123 { fails.append("parsePID 容忍換行") }
+        if CLIRecordingProbe.parsePID("abc") != nil { fails.append("非數字應 nil") }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("myparrot-949-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let pidURL = dir.appendingPathComponent("record.pid")
+        if CLIRecordingProbe.isCLIRecording(pidURL: pidURL) { fails.append("沒檔應為 false") }
+        try? Data(String(ProcessInfo.processInfo.processIdentifier).utf8).write(to: pidURL)
+        if !CLIRecordingProbe.isCLIRecording(pidURL: pidURL) { fails.append("自己的 pid 應為活著") }
+        try? Data("999999".utf8).write(to: pidURL)
+        if CLIRecordingProbe.isCLIRecording(pidURL: pidURL) { fails.append("不存在的 pid 應為 false") }
+        return Result(name: "CAL-06b CLI 錄音中探測(#949)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "無檔/活 pid/死 pid 三案" : fails.joined(separator: ";"))
+    }
+
+
+    /// BUG-31/UI-42:自存視窗 frame 來自別的螢幕配置時夾回可見區。
+    static func windowFrameClamp() -> Result {
+        var fails: [String] = []
+        let mac = CGRect(x: 0, y: 0, width: 1512, height: 949)        // MacBook 可見區(扣掉選單列)
+        let ext = CGRect(x: 1512, y: -98, width: 1920, height: 1050)   // 外接螢幕
+        let saved = CGRect(x: 1685, y: 566, width: 393, height: 652)   // Eric 偏好裡的壞值
+        let r1 = WindowFrameClamp.clamp(saved, screens: [mac], primary: mac)
+        if r1 != CGRect(x: 1512 - 393, y: 949 - 652, width: 393, height: 652) { fails.append("外接螢幕拔掉後應貼回主螢幕右上,得 \(r1)") }
+        let r2 = WindowFrameClamp.clamp(saved, screens: [mac, ext], primary: mac)
+        if r2 != saved { fails.append("外接螢幕還在時應原樣,得 \(r2)") }
+        let inside = CGRect(x: 100, y: 100, width: 393, height: 652)
+        if WindowFrameClamp.clamp(inside, screens: [mac], primary: mac) != inside { fails.append("本來就在螢幕內應原樣") }
+        let mostly = CGRect(x: 1512 - 250, y: 100, width: 393, height: 652)   // 64% 在螢幕內
+        if WindowFrameClamp.clamp(mostly, screens: [mac], primary: mac) != mostly { fails.append("過半可見應原樣") }
+        let sliver = CGRect(x: 1472, y: 100, width: 393, height: 652)          // 只露 40 pt(Eric 看到的)
+        let r5 = WindowFrameClamp.clamp(sliver, screens: [mac], primary: mac)
+        if r5.maxX != 1512 || r5.minY != 100 { fails.append("只露一小條應整個推回螢幕內,得 \(r5)") }
+        let huge = CGRect(x: -50, y: -50, width: 2000, height: 1500)
+        let r6 = WindowFrameClamp.clamp(huge, screens: [mac], primary: mac)
+        if r6 != mac { fails.append("比螢幕大應縮成可見區,得 \(r6)") }
+        if WindowFrameClamp.clamp(.zero, screens: [mac], primary: mac) != .zero { fails.append("零 frame 原樣回傳") }
+        return Result(name: "UI-42 自存視窗 frame 夾回可見區(BUG-31)", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "壞值 1685→1119;外接在時原樣;螢幕內/過半/一小條/過大/零 共 7 案" : fails.joined(separator: ";"))
+    }
+
 }

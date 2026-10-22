@@ -68,6 +68,26 @@ func parseDuration(_ raw: String) -> TimeInterval? {
     }
 }
 
+/// #949 REC-37:GUI 在錄時 `record` 的拒絕訊息(純函式)。elapsed 以 h:mm:ss 呈現。
+func guiRecordingRefusal(name: String, elapsed: Double) -> String {
+    // 文案照 brief §3／§5.9 原文(全形標點;GUI 字串表同一句)。
+    "MyParrot app 正在錄音：\(name)（\(clockString(elapsed))），用 app 或 myparrot stop 結束"
+}
+
+/// 秒數 → `h:mm:ss`(純函式)。
+func clockString(_ t: Double) -> String {
+    let s = max(0, Int(t))
+    return String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+}
+
+/// 別人(另一個 owner)這場錄了多久:state.json 是同一場(sessionId 相同)就用它寫的 elapsed(扣掉暫停),
+/// 否則用租約 startedAt 到現在估。
+func externalElapsed(_ lease: RecordingLease, state: RecordingStateFile? = StateStore.readState(), now: Date = Date()) -> Double {
+    if let s = state, !lease.sessionId.isEmpty, s.sessionId == lease.sessionId { return s.elapsed }
+    guard let started = ISO8601.date(lease.startedAt) else { return 0 }
+    return max(0, now.timeIntervalSince(started))
+}
+
 /// 裝置比對(旗標/config 存的字串 → 實際裝置)。優先比對穩定的 `uid`(BUG-13 教訓:
 /// 數字 `id` 在拔插/重開機後會重編,不能拿來持久化比對),其次名稱包含(方便
 /// `--mic airpods` 這種人手打的用法),最後才嘗試當數字 id 解析。純函式。
@@ -194,7 +214,7 @@ private final class Watchdog: @unchecked Sendable {
 /// `start(options:)` 跑到底直接 `exit()`,不回傳(前景進程職責就是跑完這一場)。
 @MainActor
 final class RecordSession {
-    private let controller = RecordingController()
+    private let controller: RecordingController
     private let signalCoordinator = SignalCoordinator()
     private let watchdog = Watchdog()
     private var maxDurationHit = false
@@ -202,9 +222,45 @@ final class RecordSession {
     private var sigintSource: DispatchSourceSignal?
     private var sigtermSource: DispatchSourceSignal?
 
+    /// #949:錄音資料夾在建 controller 時就指定(不先掃偏好裡的舊資料夾)。
+    private init(recordingsDir: URL) {
+        controller = RecordingController(recordingsDir: recordingsDir)
+    }
+
     static func start(options: RecordOptions) async {
-        let session = RecordSession()
+        // #949 REC-37:租約被別人持有 ⇒ 直接拒絕,連 controller 都不建(不掃資料夾、不請麥克風)。
+        refuseIfLeaseHeld(json: options.json)
+        let session = RecordSession(recordingsDir: resolvedRecordingsDir(CLIConfigStore.load()))
         await session.run(options: options)
+    }
+
+    /// 已有錄音中 → exit 4(§2.2)。舊 CLI(只有 record.pid)與新版租約兩種都擋。
+    private static func refuseIfLeaseHeld(json: Bool) {
+        if let active = StateStore.activePID() {
+            Output.errLine("已有錄音進行中(pid \(active)),用 myparrot stop 結束")
+            MPExitCode.recordingFailed.terminate()
+        }
+        switch RecordingLeaseHolder.inspect() {
+        case .alive(let lease): refuse(lease: lease, json: json)
+        case .unreadable(let e):
+            Output.errLine("讀不到錄音租約(\(String(cString: strerror(e)))),為免兩邊同時錄音,不開錄")
+            MPExitCode.recordingFailed.terminate()
+        case .none, .dead: return
+        }
+    }
+
+    /// REC-37:GUI 在錄 ⇒「MyParrot app 正在錄音：<name>（<elapsed>），用 app 或 myparrot stop 結束」＋ `refused` 事件;
+    /// 另一個 CLI ⇒ 同今天(訊息含 pid)。都 exit `recordingFailed`(4)。
+    private static func refuse(lease: RecordingLease, json: Bool) -> Never {
+        let elapsed = externalElapsed(lease)
+        if lease.owner == "gui" {
+            Output.errLine(guiRecordingRefusal(name: lease.name, elapsed: elapsed))
+            if json { Output.refused(reason: "gui-recording", lease: lease, elapsed: elapsed) }
+        } else {
+            Output.errLine("已有錄音進行中(pid \(lease.pid)),用 myparrot stop 結束")
+            if json { Output.refused(reason: lease.owner == "cli" ? "cli-recording" : "recording", lease: lease, elapsed: elapsed) }
+        }
+        MPExitCode.recordingFailed.terminate()
     }
 
     private func run(options: RecordOptions) async {
@@ -212,14 +268,8 @@ final class RecordSession {
         let jsonMode = options.json
         let quiet = options.quiet
 
-        // 已有錄音中 → exit 4(§2.2)。
-        if let active = StateStore.activePID() {
-            Output.errLine("已有錄音進行中(pid \(active)),用 myparrot stop 結束")
-            MPExitCode.recordingFailed.terminate()
-        }
-
-        let recordingsDir = resolvedRecordingsDir(config)
-        controller.setRecordingsDir(recordingsDir)
+        let recordingsDir = controller.recordingsDir
+        controller.leaseOwner = "cli"   // #949:租約/state.json 標 owner=cli
         // CLI 只請麥克風——不走 controller.requestPermissions():它連帶呼叫
         // SFSpeechRecognizer.requestAuthorization,而 bare CLI 的 __info_plist 在
         // TCC 的 usage-description 查找路徑上讀不到(2026-08-10 實測:嵌了 plist
@@ -267,8 +317,13 @@ final class RecordSession {
         // 會在「全新空目錄」誤判失敗(2026-08-10 復現台實測:state=recording 卻
         // exit 4;執行者審查時也獨立標記過同一問題)。
         guard controller.state == .recording else {
-            Output.errLine("錄音未能啟動(state=\(controller.state))")
-            StateStore.cleanup()
+            // #949:只清自己的 record.pid——state.json 此刻可能是 GUI owner 的,不能一起刪。
+            StateStore.removePIDFile(ifPID: pid)
+            // 開錄前檢查過租約,這裡還被擋＝同秒競爭輸了(O_EXCL 只有一個成功)⇒ 一樣走 refused。
+            if case .held(let existing)? = controller.lastLeaseError {
+                Self.refuse(lease: existing ?? .placeholder, json: jsonMode)
+            }
+            Output.errLine("錄音未能啟動(state=\(controller.state))\(controller.lastError.map { ":\($0)" } ?? "")")
             MPExitCode.recordingFailed.terminate()
         }
         // startRecording() 尚未把新 Recording 放進 recordings(那是 stop() 才做的)。
@@ -367,6 +422,7 @@ final class RecordSession {
     private func recordingLoop(options: RecordOptions, startedAt: Date, jsonMode: Bool, quiet: Bool) async {
         var previousLineCount = 0
         var lastSecondTick = Date.distantPast
+        var lastStateWrite = Date.distantPast
         var lastOtherSignalAt = Date()
         var lastYouSignalAt = Date()
         var lastWarningSent: String?
@@ -394,10 +450,16 @@ final class RecordSession {
             }
 
             let now = Date()
-            if now.timeIntervalSince(lastSecondTick) >= 1.0 {
-                lastSecondTick = now
+            // #949 REC-34:owner 每 0.5 秒寫 state.json(GUI 的橫幅/`status` 讀它)。
+            if now.timeIntervalSince(lastStateWrite) >= 0.5 {
+                lastStateWrite = now
                 writeState(state: controller.state == .paused ? "paused" : "recording", startedAt: startedAt,
                           audioPath: nil, name: options.name, warning: controller.deviceChangeWarning)
+            }
+            if now.timeIntervalSince(lastSecondTick) >= 1.0 {
+                lastSecondTick = now
+                // #949 REC-36:每 1 秒收一次 commands/(GUI 橫幅的停止／暫停／繼續、`myparrot stop` 給 GUI 以外的情境)。
+                pollCommands(jsonMode: jsonMode)
                 if jsonMode && !quiet {
                     Output.jsonEvent([
                         "event": "level", "other": Double(controller.otherLevel), "you": Double(controller.youLevel),
@@ -427,17 +489,55 @@ final class RecordSession {
         if !jsonMode && !quiet && Output.isStdoutTTY { print("") }
     }
 
+    /// CLI owner 收指令:stop ⇒ 走跟 Ctrl-C 同一條收尾(requestStop);pause/resume ⇒ controller;
+    /// mark ⇒ 只印一行事件(CLI 沒有筆記);title ⇒ 改 currentTitle(檔名開錄時已定,不改檔名)。
+    private func pollCommands(jsonMode: Bool) {
+        guard let sid = controller.sessionId else { return }
+        let started = controller.heldLease.flatMap { ISO8601.date($0.startedAt) } ?? Date.distantPast
+        for cmd in RecordingCommandStore.pending() {
+            if let why = RecordingCommand.rejection(cmd, sessionId: sid, sessionStartedAt: started) {
+                RecordingCommandStore.complete(cmd.requestId, ok: false, result: why)
+                continue
+            }
+            var ok = true
+            var result = cmd.cmd
+            switch cmd.cmd {
+            case "stop":
+                signalCoordinator.requestStop()
+                result = "stopping"
+                if !jsonMode { Output.errLine("\n收到停止指令(來自 app 或另一個 myparrot),正在收尾…") }
+            case "pause":
+                controller.pause(); ok = controller.state == .paused; result = ok ? "paused" : "not recording"
+            case "resume":
+                controller.resume(); ok = controller.state == .recording; result = ok ? "recording" : "not paused"
+            case "mark":
+                result = "marked"
+            case "title":
+                if let t = cmd.args["title"] { controller.currentTitle = t }
+                result = controller.currentTitle
+            default:
+                ok = false; result = "不支援的指令:\(cmd.cmd)"
+            }
+            if jsonMode { Output.jsonEvent(["event": "command", "cmd": cmd.cmd, "requestId": cmd.requestId, "ok": ok]) }
+            RecordingCommandStore.complete(cmd.requestId, ok: ok, result: result)
+            if cmd.cmd == "stop" { break }
+        }
+    }
+
     private func writeState(state: String, startedAt: Date, audioPath: String?, name: String, warning: String?) {
+        // #949 REC-34:舊欄位一個不少(舊 CLI 讀得懂)＋ owner／sessionId／elapsed／paused／markers／protocolVersion。
         let s = CLIRecordingState(
             pid: Int32(ProcessInfo.processInfo.processIdentifier),
             startedAt: ISO8601.string(startedAt),
-            audioPath: audioPath ?? "",
+            audioPath: audioPath ?? controller.inprogressAudioPath ?? "",
             name: name,
             state: state,
             levels: .init(other: Double(controller.otherLevel), you: Double(controller.youLevel),
                          otherSignal: controller.sysHasSignal, youSignal: controller.micHasSignal),
             warning: warning,
-            updatedAt: ISO8601.string()
+            updatedAt: ISO8601.string(),
+            owner: "cli", sessionId: controller.sessionId ?? "", elapsed: controller.liveElapsed,
+            paused: controller.state == .paused, markers: controller.markerCount
         )
         try? StateStore.writeState(s)
     }
@@ -449,8 +549,10 @@ final class RecordSession {
         writeState(state: "postprocessing", startedAt: Date(), audioPath: nil,
                   name: options.name, warning: controller.deviceChangeWarning)
 
-        guard let recID = controller.recordings.first?.id else {
-            Output.errLine("錄音時間過短,未儲存檔案")
+        // #949:用 stop() 這次真的建的那一筆(發布失敗時沒有這筆;不能拿 recordings.first——那可能是資料夾裡更早的舊檔)。
+        guard let recID = controller.lastStoppedRecordingID else {
+            // #949:發布失敗(檔留 inprogress 等收割)或太短進隔離區時 lastError 有原因。
+            Output.errLine(controller.lastError ?? "錄音時間過短,未儲存檔案")
             return .recordingFailed
         }
         // 逾時上限=音長×4+600s(§4.3),用剛錄的 elapsed 當音長估計。
@@ -460,7 +562,9 @@ final class RecordSession {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         guard let rec = controller.recordings.first(where: { $0.id == recID }) else {
-            Output.errLine("錄音檔轉檔失敗或被判定為空檔,未儲存")
+            // #949 REC-33:太短的檔搬進 .myparrot/quarantine/(不再刪),訊息由 controller.lastError 帶出。
+            Output.errLine(controller.lastError ?? "錄音檔轉檔失敗或被判定為空檔,未儲存")
+            if jsonMode, let err = controller.lastError { Output.jsonEvent(["event": "error", "message": err]) }
             return .recordingFailed
         }
 

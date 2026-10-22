@@ -1,10 +1,11 @@
 import AppKit
+import MyParrotCore
 import Observation
 
 /// UI-25: the three window modes ⌘1 cycles through.
 enum WindowMode: String, Sendable {
     case standard   // 標準視窗(記住 frame)
-    case compact    // 窄版視窗(380×620,左上角錨定;UI-34 320→380 配合單列狀態列)
+    case compact    // 窄版視窗(380×620,左上角錨定;UI-34 320→380 配合單列狀態列;#2438 M4 只剩左欄)
     case mini       // 迷你控制列
 
     var icon: String {
@@ -55,6 +56,7 @@ enum WindowMode: String, Sendable {
 final class WindowModeManager {
     private static let modeKey = "windowMode"
     private static let frameKey = "windowFrame.standard"
+    // #2438 M4:M3 的 760 過渡收回 620(逐字稿移到直欄,窄版只剩左欄;plan §3.4)。
     private static let compactSize = NSSize(width: 380, height: 620)
 
     var mode: WindowMode
@@ -81,7 +83,7 @@ final class WindowModeManager {
         }
         switch mode {
         case .standard:
-            if let frame = savedStandardFrame() { window.setFrame(frame, display: true) }
+            if let frame = savedStandardFrame() { window.setFrame(Self.clampToScreens(frame), display: true) }
         case .compact:
             applyCompactFrame(to: window)
         case .mini:
@@ -103,12 +105,19 @@ final class WindowModeManager {
         UserDefaults.standard.set(target.rawValue, forKey: Self.modeKey)
         switch target {
         case .standard:
-            if let frame = savedStandardFrame() { window.setFrame(frame, display: true) }
+            if let frame = savedStandardFrame() { window.setFrame(Self.clampToScreens(frame), display: true) }
         case .compact:
             applyCompactFrame(to: window)
         case .mini:
             break
         }
+    }
+
+    /// BUG-31:自存 frame 可能來自別的螢幕配置(外接螢幕時存的 x=1685),套之前夾回目前螢幕的可見區。
+    private static func clampToScreens(_ frame: NSRect) -> NSRect {
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        let primary = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? frame
+        return WindowFrameClamp.clamp(frame, screens: screens, primary: primary)
     }
 
     /// 380×620,保持左上角不動(高度變小/變大都從底部伸縮)。
@@ -129,7 +138,25 @@ final class WindowModeManager {
         return r == .zero ? nil : r
     }
 
-    private func currentWindow() -> NSWindow? {
+    /// #2438 A1(UI-47):面板操作(開關欄、拉欄寬、停靠)後由 `WorkspaceView` 算好 frame
+    /// (`WorkspaceLayout.resolve`)再套進來。只在標準模式動;跟現在一樣就不動(避免空動畫)。
+    /// 使用者自己拖視窗邊不會走到這裡。
+    func applyWorkspaceFrame(_ frame: NSRect, animate: Bool = true) {
+        guard mode == .standard, let window = currentWindow() else { return }
+        let cur = window.frame
+        let same = abs(cur.minX - frame.minX) < 0.5 && abs(cur.minY - frame.minY) < 0.5
+            && abs(cur.width - frame.width) < 0.5 && abs(cur.height - frame.height) < 0.5
+        guard !same else { return }
+        window.setFrame(frame, display: true, animate: animate)
+    }
+
+    /// 主視窗所在螢幕的可見區(A1 的「螢幕可見區」;多螢幕時是視窗所在那台)。
+    func currentVisibleFrame() -> NSRect? {
+        guard let window = currentWindow() else { return nil }
+        return (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+    }
+
+    func currentWindow() -> NSWindow? {
         NSApp.windows.first { $0.contentView != nil && !$0.isSheet }
     }
 }

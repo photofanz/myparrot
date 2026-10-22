@@ -25,7 +25,8 @@ struct TranscribeCommand: AsyncParsableCommand {
         }
 
         let config = CLIConfigStore.load()
-        let controller = RecordingController()
+        // #949:指定 config 的資料夾(init 會掃＋收割;不掃偏好裡的舊資料夾)。
+        let controller = RecordingController(recordingsDir: resolvedRecordingsDir(config))
         controller.engine = resolveEngine(engine ?? config.engine)
         if let langRaw = config.language, let lang = parseLanguage(langRaw) { controller.language = lang }
 

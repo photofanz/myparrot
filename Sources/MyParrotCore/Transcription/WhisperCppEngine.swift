@@ -19,13 +19,30 @@ public actor WhisperCppEngine {
         deinit { if let ptr { whisper_free(ptr) } }
     }
 
+    /// BUG-27 殘留(#1697):退出時要能把跑到一半的 `whisper_full` 叫停。旗標由
+    /// MainActor 設、由 whisper 的 abort_callback 在推理執行緒讀 ⇒ 不能是 actor
+    /// 隔離狀態(actor 正被 whisper_full 佔著,誰也進不來),用自帶鎖的小箱子。
+    final class AbortFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+        func set(_ v: Bool) { lock.lock(); value = v; lock.unlock() }
+    }
+
     private let modelURL: URL
     private let box = CtxBox()
+    private let abortFlag = AbortFlag()
     private var ctx: OpaquePointer? { box.ptr }
 
     public init(modelURL: URL) {
         self.modelURL = modelURL
     }
+
+    /// 要求中斷目前這次推理(退出流程用)。nonisolated:呼叫端不必等 actor 空出來。
+    public nonisolated func requestAbort() { abortFlag.set(true) }
+    /// 解除中斷旗標(下一次轉稿前要清,否則會一直早退)。
+    public nonisolated func clearAbort() { abortFlag.set(false) }
+    public nonisolated var isAbortRequested: Bool { abortFlag.isSet }
 
     private func ensureLoaded() throws {
         guard box.ptr == nil else { return }
@@ -65,9 +82,20 @@ public actor WhisperCppEngine {
         if let langC { params.language = UnsafePointer(langC) }
         if let promptC { params.initial_prompt = UnsafePointer(promptC) }
 
+        // #1697:掛中斷 callback——whisper 每算完一層/一步會問一次「要不要停」,
+        // 回 true 就讓 whisper_full 早退(rc≠0)。退出流程靠這個把 context 釋放掉,
+        // 否則 exit() 會走到 ggml 的 Metal 全域解構 abort(BUG-27 殘留)。
+        let flagRef = Unmanaged.passUnretained(abortFlag).toOpaque()
+        params.abort_callback = { ud in
+            guard let ud else { return false }
+            return Unmanaged<AbortFlag>.fromOpaque(ud).takeUnretainedValue().isSet
+        }
+        params.abort_callback_user_data = flagRef
+
         let rc = samples16k.withUnsafeBufferPointer { buf in
             whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
         }
+        if abortFlag.isSet { throw "whisper 轉稿已中斷(退出中)" }
         guard rc == 0 else { throw "whisper_full 失敗(rc=\(rc))" }
 
         let n = whisper_full_n_segments(ctx)

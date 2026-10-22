@@ -1,4 +1,5 @@
 import Foundation
+import MyParrotCore
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -36,6 +37,25 @@ enum Output {
         print(JSONLine.encode(fields))
         fflush(stdout)
     }
+
+    // MARK: - #949 第一段新事件
+
+    /// `record` 遇到別人持有租約:`{"event":"refused","reason":"gui-recording","sessionId":…,"name":…,"elapsed":12.3}`。
+    static func refused(reason: String, lease: RecordingLease, elapsed: Double) {
+        jsonEvent(["event": "refused", "reason": reason, "sessionId": lease.sessionId, "name": lease.name,
+                   "owner": lease.owner, "pid": Int(lease.pid), "elapsed": elapsed])
+    }
+
+    /// `stop` 對象是 GUI owner(走 commands/ 指令檔):`{"event":"external","owner":"gui","action":"stop","result":"done"|"failed"|"timeout",…}`。
+    static func external(action: String, lease: RecordingLease, result: String, detail: String? = nil) {
+        jsonEvent(["event": "external", "owner": lease.owner, "action": action, "sessionId": lease.sessionId,
+                   "name": lease.name, "result": result, "detail": detail])
+    }
+
+    /// 收割端把死掉的 inprogress 復原成頂層成品:`{"event":"recovered","sessionId":…,"audioPath":…}`。
+    static func recovered(sessionId: String, audioPath: String) {
+        jsonEvent(["event": "recovered", "sessionId": sessionId, "audioPath": audioPath])
+    }
 }
 
 /// 純函式 JSON 單行編碼——沒有依賴 JSONSerialization 的巢狀型別限制,方便給
@@ -58,6 +78,10 @@ enum JSONLine {
         case let i as Int32: return String(i)
         case let d as Double: return formatNumber(d)
         case let f as Float: return formatNumber(Double(f))
+        // #949:status 的 `recoverable` 是物件陣列——支援一層巢狀(物件/陣列),nil 欄位同樣略過。
+        case let obj as [String: Any?]: return encode(obj)
+        case let obj as [String: Any]: return encode(obj.mapValues { Optional($0) })
+        case let arr as [Any]: return "[" + arr.map(encodeValue).joined(separator: ",") + "]"
         default: return escapeString("\(value)")
         }
     }

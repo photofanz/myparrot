@@ -142,14 +142,8 @@ enum CLIConfigStore {
     /// `~/.config/myparrot`。直接 `getenv`(而非 `ProcessInfo.environment`)——
     /// 前者保證每次呼叫都讀到當下的環境變數,SelfTest 用 `setenv` 切換測試目錄
     /// 時才不會撞到任何潛在的快取行為。
-    static var configDir: URL {
-        if let raw = getenv("MYPARROT_CONFIG_DIR") {
-            let s = String(cString: raw)
-            if !s.isEmpty { return URL(fileURLWithPath: expandTilde(s), isDirectory: true) }
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".config/myparrot", isDirectory: true)
-    }
+    /// #949 第一段:規則本體搬到 Core `MyParrotPaths.configDir`(GUI 的租約/state/commands 也讀同一個),這裡轉呼叫。
+    static var configDir: URL { MyParrotPaths.configDir }
 
     static var configPath: URL { configDir.appendingPathComponent("config.json") }
     static var hooksApprovedPath: URL { configDir.appendingPathComponent(".hooks-approved") }

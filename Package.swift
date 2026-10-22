@@ -19,10 +19,18 @@ let package = Package(
             name: "whisper",
             path: "Frameworks/whisper.xcframework"
         ),
+        // ObjC 小目標:@try/@catch 把 AVFAudio 的 NSException 轉成 Swift 接得到的值
+        // (AUD-37,#2523:AirPods 剛連上時 installTap 斷言會把整個 app abort)。
+        .target(
+            name: "MyParrotObjC",
+            path: "Sources/MyParrotObjC",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "MyParrotCore",
             dependencies: [
                 "whisper",
+                "MyParrotObjC",
                 .product(name: "OpenCC", package: "SwiftyOpenCC")
             ],
             path: "Sources/MyParrotCore"

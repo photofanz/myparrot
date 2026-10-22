@@ -12,13 +12,35 @@ struct ListCommand: AsyncParsableCommand {
     @MainActor
     func run() async throws {
         let config = CLIConfigStore.load()
-        let controller = RecordingController()
-        controller.setRecordingsDir(resolvedRecordingsDir(config))
+        // #949:建 controller 時就指定資料夾(init 會掃＋收割;不先掃偏好裡的舊資料夾)。
+        let controller = RecordingController(recordingsDir: resolvedRecordingsDir(config))
+        // #949 REC-32:init 的收割端把租約已死的 inprogress 復原成頂層「-已修復」檔 ⇒ 每場一個 `recovered` 事件。
+        // 走 stderr(--json 時 stdout 要維持單一 JSON 陣列,不能混進事件行)。
+        let recoveredPaths = Set(controller.recoveredRecordings.map(\.url.path))
+        for r in controller.recoveredRecordings {
+            if json {
+                FileHandle.standardError.write(Data((JSONLine.encode(["event": "recovered", "sessionId": r.sessionId,
+                                                                       "audioPath": r.url.path]) + "\n").utf8))
+            } else {
+                Output.errLine("已復原中斷的錄音:\(r.url.path)")
+            }
+        }
+        // 剛復原的那幾場正在轉 m4a:等轉完(上限 120 秒)再列,列出來的才是最終路徑。
+        if !recoveredPaths.isEmpty {
+            let deadline = Date().addingTimeInterval(120)
+            while controller.recordings.contains(where: { $0.isConverting }), Date() < deadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        // 收割過程的錯誤(太短進隔離區、讀不到租約 fail closed、復原 rename 失敗)一律講出來,不吞。
+        if let err = controller.lastError { Output.errLine(err) }
 
         if json {
             let items = controller.recordings.map { rec -> [String: Any?] in
                 ["title": rec.title, "path": rec.url.path, "date": ISO8601.string(rec.date),
-                 "durationSec": rec.duration, "hasTranscript": rec.hasTranscript, "isConverting": rec.isConverting]
+                 "durationSec": rec.duration, "hasTranscript": rec.hasTranscript, "isConverting": rec.isConverting,
+                 "needsManualRepair": rec.needsManualRepair,
+                 "recovered": rec.title.hasSuffix(Recording.repairedSuffix) ? true : nil]
             }
             let lines = items.map { JSONLine.encode($0) }
             print("[" + lines.joined(separator: ",") + "]")
