@@ -78,6 +78,27 @@ enum DebugControl {
             c.currentTitle = params.first ?? ""; write(["ok": true, "title": c.currentTitle], to: out)
         case "dismiss-warning":
             c.warning = nil; write(["ok": true], to: out)
+        case "mic":
+            // AUD-38(#2529):mic list | select <index|名稱片段>(先比 index,再用名稱片段不分大小寫比對)。
+            let devices = c.availableInputDevices
+            switch params.first ?? "" {
+            case "list":
+                write(["ok": true, "devices": devices.enumerated().map { i, d -> [String: Any] in
+                    ["index": i, "name": d.name, "bluetooth": d.isBluetooth, "selected": c.selectedInputDevice?.uid == d.uid] }],
+                      to: out)
+            case "select":
+                guard params.count >= 2 else { write(["ok": false, "error": "usage: mic select <index|name>"], to: out); return }
+                let spec = params[1]
+                let hit: AudioInputDevice? = Int(spec).flatMap { n in devices.indices.contains(n) ? devices[n] : nil }
+                    ?? devices.first { $0.name.localizedCaseInsensitiveContains(spec) }
+                guard let dev = hit else {
+                    write(["ok": false, "error": "no such mic: \(spec)", "devices": devices.map(\.name)], to: out); return
+                }
+                c.switchMic(to: dev)
+                write(["ok": true, "name": dev.name, "isSwitchingMic": c.isSwitchingMic], to: out)
+            default:
+                write(["ok": false, "error": "usage: mic list | mic select <index|name>"], to: out)
+            }
         case "transcribe":
             guard let rec = recording(params.first ?? "latest") else { write(["ok": false, "error": "no such recording"], to: out); return }
             c.transcribe(rec); write(["ok": true, "title": rec.title], to: out)
@@ -491,6 +512,8 @@ enum DebugControl {
             "elapsed": c.elapsed,
             "otherLevel": Double(c.otherLevel), "youLevel": Double(c.youLevel),
             "otherHasSignal": c.sysHasSignal, "youHasSignal": c.micHasSignal,
+            "isSwitchingMic": c.isSwitchingMic,                       // AUD-38
+            "mic": c.selectedInputDevice?.name ?? NSNull(),           // AUD-38
             "warning": c.deviceChangeWarning ?? NSNull(),
             "lastError": c.lastError ?? NSNull(),
             "title": c.currentTitle,

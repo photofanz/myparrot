@@ -6,14 +6,29 @@ import os
 /// Captures the "other party" audio — everything the system plays — via a global
 /// Core Audio Process Tap (macOS 14.4+). No virtual driver, bot-free.
 /// Emits the tap's native-format buffers; conversion/mux happens in StereoRecorder.
-final class SystemAudioCapture {
+///
+/// AUD-39(#2529／BUG-35):建／拆 process tap＋aggregate 在藍牙狀態變動時會等 HAL(真機 R3 重連時
+/// 主執行緒 1.4 s),所以 start／stop 搬到專用序列佇列 `controlQueue`、完成回 main;`stop()` 呼叫當下
+/// 翻 `muted`,IOProc 立刻丟 buffer。tap／aggregate／IOProc id 等狀態只在 `controlQueue` 上讀寫;
+/// IOProc 跑在自己的 `queue`(既有)。`@unchecked Sendable` 由這個佇列紀律保證。
+final class SystemAudioCapture: @unchecked Sendable {
 
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onLevel: ((Float) -> Void)?
 
+    /// AUD-39:start／stop 的序列佇列(與 IOProc 的 `queue` 分開)。
+    private static let controlQueue = DispatchQueue(label: "tw.uncle.MyParrot.sys-capture", qos: .userInitiated)
+    /// stop() 一呼叫就翻 true,IOProc 第一行就丟 buffer;start 在佇列上翻回 false。
+    private let muted = OSAllocatedUnfairLock(initialState: false)
+    /// AUD-39 D(G3):每次 `stop()` 當下遞增;`start` 入列時記下,輪到它時世代變了(中間又被 stop)就取消,
+    /// 不把 muted 翻回 false。
+    private let generation = OSAllocatedUnfairLock(initialState: 0)
+
     private let queue = DispatchQueue(label: "MyParrot.SystemAudioCapture", qos: .userInitiated)
 
     private var tapID = AudioObjectID.unknown
+    /// AUD-40:建 aggregate 時用的那顆**真實輸出裝置**(不是 aggregate);看門狗判死前查它是否在跑。controlQueue-confined。
+    private var outputDeviceID = AudioObjectID.unknown
     private var aggregateID = AudioObjectID.unknown
     private var inputStreamID = AudioObjectID.unknown
     private var procID: AudioDeviceIOProcID?
@@ -90,8 +105,68 @@ final class SystemAudioCapture {
         return out
     }
 
-    func start() throws {
-        guard !isRunning else { return }
+    /// AUD-39:非阻塞啟動;在 `controlQueue` 上建 tap＋aggregate＋IOProc,完成(成功 nil／失敗 error)回 main。
+    /// 失敗時已清乾淨(BUG-22:半途失敗也要拆掉已建的 tap／aggregate)。
+    func start(completion: @escaping @Sendable (Error?) -> Void) {
+        let gen = generation.withLock { $0 }
+        SystemAudioCapture.controlQueue.async { [self] in
+            guard gen == generation.withLock({ $0 }) else {
+                DispatchQueue.main.async { completion("對方軌啟動已取消(排隊期間被停止)") }
+                return
+            }
+            muted.withLock { $0 = false }
+            do {
+                try startOnQueue()
+                DispatchQueue.main.async { completion(nil) }
+            } catch {
+                teardown()
+                DispatchQueue.main.async { completion(error) }
+            }
+        }
+    }
+
+    /// AUD-39:非阻塞停止;呼叫當下靜音,拆除在 `controlQueue` 上做,做完(有給 completion 才)回 main。
+    func stop(completion: (@Sendable () -> Void)? = nil) {
+        muted.withLock { $0 = true }
+        generation.withLock { $0 += 1 }   // G3:排在後面的 start 作廢
+        SystemAudioCapture.controlQueue.async { [self] in
+            teardown()
+            if let completion { DispatchQueue.main.async(execute: completion) }
+        }
+    }
+
+    /// AUD-40(BUG-36):目標輸出裝置是否有人在跑 IO(`kAudioDevicePropertyDeviceIsRunningSomewhere`)。
+    /// 整台 Mac 沒聲音在播時輸出裝置閒置、tap 不送 buffer,跟 tap 死掉用 buffer 流量分不出來,看門狗判死前先問這個。
+    /// 在 `controlQueue` 上讀(藍牙裝置轉換時讀裝置屬性會卡,不在 main 讀);讀不到回 nil。結果回 main。
+    func checkOutputRunning(completion: @escaping @Sendable (Bool?) -> Void) {
+        SystemAudioCapture.controlQueue.async { [self] in
+            let t0 = DispatchTime.now()
+            let result = Self.isRunningSomewhere(outputDeviceID)
+            os_log("MyParrot sys: 輸出裝置 %u IsRunningSomewhere=%{public}@ %ldms", outputDeviceID,
+                   result.map { $0 ? "1" : "0" } ?? "nil", Self.ms(since: t0))
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private static func isRunningSomewhere(_ dev: AudioObjectID) -> Bool? {
+        guard dev.isValid else { return nil }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let st = AudioObjectGetPropertyData(dev, &address, 0, nil, &size, &value)
+        return st == noErr ? (value != 0) : nil
+    }
+
+    /// 既有的同步建立流程,只在 `controlQueue` 上跑。
+    private func startOnQueue() throws {
+        dispatchPrecondition(condition: .onQueue(SystemAudioCapture.controlQueue))
+        // AUD-39 M1:建 tap＋aggregate＋IOProc 的耗時(成功或失敗都記;真機對主執行緒回應迴圈用)。
+        let t0 = DispatchTime.now()
+        var ok = false
+        defer { os_log("MyParrot sys: start %ldms ok=%ld", Self.ms(since: t0), ok ? 1 : 0) }
+        guard !isRunning else { ok = true; return }
 
         // Global tap of all system output, excluding OUR OWN process (so playing back a
         // recording or monitoring the mic through the speakers is not captured into 對方
@@ -111,6 +186,7 @@ final class SystemAudioCapture {
 
         let outputID = try AudioObjectID.readDefaultSystemOutputDevice()
         let outputUID = try outputID.readDeviceUID()
+        outputDeviceID = outputID   // AUD-40
 
         let aggregateDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "MyParrot-SystemTap",
@@ -140,7 +216,9 @@ final class SystemAudioCapture {
         guard tapFormat != nil else { throw "Failed to build AVAudioFormat from tap" }
 
         let ioBlock: AudioDeviceIOBlock = { [weak self] _, inInputData, inInputTime, _, _ in
-            guard let self, let fmt = self.tapFormat else { return }
+            guard let self else { return }
+            if self.muted.withLock({ $0 }) { return }   // AUD-39:stop() 當下就不再送 buffer
+            guard let fmt = self.tapFormat else { return }
             guard let buffer = AVAudioPCMBuffer(pcmFormat: fmt, bufferListNoCopy: inInputData, deallocator: nil) else { return }
             // BUG-25:藍牙輸出當時鐘主時,藍牙重傳/抖動會讓 IOProc 漏拍——漏掉的樣本
             // 從未送達,左軌波形被「跳接」,一場 30 分鐘可累積數十萬個爆點(BUG-25 實例
@@ -171,6 +249,11 @@ final class SystemAudioCapture {
         guard err == noErr else { throw "Failed to start device (\(err))" }
 
         isRunning = true
+        ok = true
+    }
+
+    private static func ms(since t: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds &- t.uptimeNanoseconds) / 1_000_000)
     }
 
     /// Best published guess for the initial rate: input-stream virtual format → device
@@ -217,7 +300,9 @@ final class SystemAudioCapture {
         }
     }
 
-    func stop() {
+    /// 既有的同步拆除流程。由 `stop(completion:)`／`start` 失敗在 `controlQueue` 上呼叫;`deinit` 也用它
+    /// (deinit 時沒有別的參考、佇列上不會有排著的工作,不必上佇列)。
+    private func teardown() {
         // BUG-22 審查發現:guard 曾經是 `isRunning`,但 `start()` 中途失敗時
         // (tap/aggregate 已建立、`AudioDeviceStart` 或更後面才拋錯)`isRunning`
         // 還沒被設成 true,導致這裡整段清理被跳過 → tap/aggregate 永久洩漏。
@@ -225,7 +310,11 @@ final class SystemAudioCapture {
         // 會洩漏一組真的 CoreAudio process tap + aggregate device。改用
         // tapID/aggregateID 是否有效判斷,不管 isRunning 有沒有真的翻過。
         guard isRunning || tapID.isValid || aggregateID.isValid else { return }
+        // AUD-39 M1:拆 IOProc＋aggregate＋tap 的耗時。
+        let t0 = DispatchTime.now()
+        defer { os_log("MyParrot sys: stop %ldms", Self.ms(since: t0)) }
         isRunning = false
+        outputDeviceID = .unknown   // AUD-40
         rateWindowStart = 0; rateFrames = 0
         nextExpectedSampleTime = -1; gapFramesFilled = 0   // BUG-25: sample timeline resets with the tap
         inputStreamID = .unknown
@@ -243,5 +332,5 @@ final class SystemAudioCapture {
         }
     }
 
-    deinit { stop() }
+    deinit { teardown() }
 }

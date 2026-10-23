@@ -164,7 +164,13 @@ struct RemoteView: View {
                 Image(systemName: "mic.fill").font(.system(size: 11)).foregroundStyle(MP.blue)
                 Text(controller.selectedInputDevice.map(micLabel) ?? L("麥克風"))
                     .font(.system(size: 12)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                // AUD-38:切麥／重建進行中 ⇒ 裝置名後接「切換中…」、chevron 換小轉圈。
+                if controller.isSwitchingMic {
+                    Text(L("切換中…")).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                }
                 Spacer(minLength: 4)
                 Text("\(L("增益")) \(gainLabel)").font(.system(size: 11)).foregroundStyle(.tertiary).monospacedDigit()
                     .fixedSize()
@@ -185,14 +191,20 @@ struct RemoteView: View {
             ForEach(controller.availableInputDevices) { dev in
                 Button { controller.switchMic(to: dev) } label: {
                     HStack(spacing: MP.spS) {
-                        Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
-                            .opacity(controller.selectedInputDevice?.id == dev.id ? 1 : 0)
+                        // AUD-38:選中那列在切換中把 checkmark 換成小轉圈。
+                        if controller.isSwitchingMic && controller.selectedInputDevice?.id == dev.id {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                                .opacity(controller.selectedInputDevice?.id == dev.id ? 1 : 0)
+                        }
                         Text(micLabel(dev)).font(MPFont.body)
                         Spacer(minLength: 0)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(controller.isSwitchingMic)   // AUD-38:切換中不接受再切
             }
             if controller.availableInputDevices.isEmpty {
                 Text(L("沒有可用的麥克風")).font(MPFont.caption).foregroundStyle(.secondary)

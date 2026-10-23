@@ -28,6 +28,10 @@ struct SelfTestCases {
     @Test("Whisper 幻覺防呆(連續複讀≥3 次壓下)") func whisperHallucinationGate() { check(SelfTest.whisperHallucinationGate()) }
     @Test("TR-28 會後重轉 VAD 分塊(切點/偏移/強制切/flush)") func whisperFileChunking() { check(SelfTest.whisperFileChunking()) }
     @Test("AUD-37 麥克風格式 guard + ObjC 例外橋") func micInputFormatGuard() { check(SelfTest.micInputFormatGuard()) }
+    @Test("AUD-38 震盪鎖與偽通知") func micRebuildPolicy() { check(SelfTest.micRebuildPolicy()) }
+    @Test("AUD-38 看門狗計數與重建判定") func micWatchdogPolicy() { check(SelfTest.micWatchdogPolicy()) }
+    @Test("AUD-38 藍牙保持器決策") func bluetoothHoldPolicy() { check(SelfTest.bluetoothHoldPolicy()) }
+    @Test("AUD-39 預設輸入穩定與已 HFP 判定") func micDevicePolicy() { check(SelfTest.micDevicePolicy()) }
     @Test("UI-58 載入舊稿時間以錄音起點為基準") func transcriptLoadBaseTime() { check(SelfTest.transcriptLoadBaseTime()) }
     @Test("回音消除(NLMS)合成驗證")    func echoCancel()       { check(SelfTest.echoCancel()) }
     @Test("AEC 無回音 gate(戴耳機略過)") func aecNoEchoGate()   { check(SelfTest.aecNoEchoGate()) }

@@ -29,6 +29,10 @@ public enum SelfTest {
             whisperHallucinationGate(),
             whisperFileChunking(),
             micInputFormatGuard(),
+            micRebuildPolicy(),
+            micWatchdogPolicy(),
+            bluetoothHoldPolicy(),
+            micDevicePolicy(),
             transcriptLoadBaseTime(),
             echoCancel(),
             aecNoEchoGate(),
@@ -454,6 +458,93 @@ public enum SelfTest {
                       detail: fails.isEmpty ? "0 Hz／0 ch 擋下;NSException 被接住:\(caught?.name.rawValue ?? "")" : fails.joined(separator: ";"))
     }
 
+    // AUD-38(#2529):裝置變更後的偽通知判定、震盪鎖、觀察窗修剪(純函式)。
+    static func micRebuildPolicy() -> Result {
+        var fails: [String] = []
+        if !MicRebuildPolicy.isSpurious(engineRunning: true, currentKey: "24000/1", tapKey: "24000/1") { fails.append("引擎在跑且格式沒變應判偽") }
+        if MicRebuildPolicy.isSpurious(engineRunning: false, currentKey: "24000/1", tapKey: "24000/1") { fails.append("引擎停了不可判偽") }
+        if MicRebuildPolicy.isSpurious(engineRunning: true, currentKey: "48000/1", tapKey: "24000/1") { fails.append("格式變了不可判偽") }
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func ago(_ s: TimeInterval) -> Date { now.addingTimeInterval(-s) }
+        let k = "24000/1"
+        let recent: [MicRebuildPolicy.Rebuild] = [(at: ago(5), key: k), (at: ago(2), key: k)]
+        if !MicRebuildPolicy.shouldLock(history: recent, now: now, key: k, isBluetooth: true) { fails.append("5 秒內同鍵兩次＋藍牙應鎖") }
+        let stale: [MicRebuildPolicy.Rebuild] = [(at: ago(25), key: k), (at: ago(25), key: k)]
+        if MicRebuildPolicy.shouldLock(history: stale, now: now, key: k, isBluetooth: true) { fails.append("25 秒前的不應算") }
+        let mixed: [MicRebuildPolicy.Rebuild] = [(at: ago(5), key: k), (at: ago(2), key: "48000/1")]
+        if MicRebuildPolicy.shouldLock(history: mixed, now: now, key: k, isBluetooth: true) { fails.append("不同鍵不應算") }
+        if MicRebuildPolicy.shouldLock(history: recent, now: now, key: k, isBluetooth: false) { fails.append("非藍牙不應鎖") }
+        if MicRebuildPolicy.shouldLock(history: [(at: ago(2), key: k)], now: now, key: k, isBluetooth: true) { fails.append("只有一筆不應鎖") }
+        let pruned = MicRebuildPolicy.prune([(at: ago(25), key: k), (at: ago(21), key: k), (at: ago(20), key: k), (at: ago(1), key: k)], now: now)
+        // F2:讀不到或 0 Hz／0 ch 的格式鍵不進紀錄。
+        if !MicRebuildPolicy.isRecordable(key: "24000/1") { fails.append("24000/1 應記") }
+        for bad in ["", "0/0", "48000/0", "0/1", "abc"] where MicRebuildPolicy.isRecordable(key: bad) { fails.append("「\(bad)」不應記") }
+        if pruned.map({ now.timeIntervalSince($0.at) }) != [20, 1] { fails.append("prune 應只留 ≤20 秒的(得 \(pruned.map { now.timeIntervalSince($0.at) }))") }
+        return Result(name: "AUD-38 震盪鎖與偽通知", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "偽通知 3 案、震盪鎖 5 案、可記格式鍵 6 案、prune 邊界(20 秒留／21 秒丟)全對" : fails.joined(separator: ";"))
+    }
+
+    // AUD-38(#2529):你軌看門狗——計數歸零(連續流動 ≥10 秒)與重建判定(切換中／被鎖不重建)。
+    static func micWatchdogPolicy() -> Result {
+        var fails: [String] = []
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        if MicWatchdogPolicy.shouldResetCount(flowSince: now.addingTimeInterval(-3), now: now) { fails.append("流 3 秒不應歸零") }
+        if !MicWatchdogPolicy.shouldResetCount(flowSince: now.addingTimeInterval(-11), now: now) { fails.append("流 11 秒應歸零") }
+        if MicWatchdogPolicy.shouldResetCount(flowSince: nil, now: now) { fails.append("沒在流不應歸零") }
+        func rebuild(_ lastBuf: TimeInterval = 3.5, count: Int = 0, lastRebuild: TimeInterval = 5,
+                     switching: Bool = false, locked: Bool = false) -> Bool {
+            MicWatchdogPolicy.shouldRebuild(sinceLastBuffer: lastBuf, count: count, sinceLastRebuild: lastRebuild,
+                                            switching: switching, locked: locked)
+        }
+        if !rebuild() { fails.append("3.5 秒無 buffer、count 0、冷卻已過應重建") }
+        if rebuild(switching: true) { fails.append("切換中不應重建") }
+        if rebuild(locked: true) { fails.append("被鎖不應重建") }
+        if rebuild(count: 3) { fails.append("連續 3 次後不應再重建") }
+        if rebuild(lastRebuild: 1) { fails.append("冷卻 1 秒不應重建") }
+        if rebuild(2.5) { fails.append("2.5 秒無 buffer 不應重建") }
+        // F4:切換逾時 20 秒。
+        if MicWatchdogPolicy.switchTimedOut(startedAt: now.addingTimeInterval(-19), now: now) { fails.append("切換 19 秒不應逾時") }
+        if !MicWatchdogPolicy.switchTimedOut(startedAt: now.addingTimeInterval(-21), now: now) { fails.append("切換 21 秒應逾時") }
+        return Result(name: "AUD-38 看門狗計數與重建判定", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "歸零 3 案、重建 6 案、切換逾時 2 案全對" : fails.joined(separator: ";"))
+    }
+
+    // AUD-38(#2529):藍牙 HFP 保持器決策——只對藍牙起、格式任一欄變＝HFP 接上;常數釘住。
+    static func bluetoothHoldPolicy() -> Result {
+        var fails: [String] = []
+        if BluetoothHoldPolicy.shouldHold(isBluetooth: false) { fails.append("非藍牙不應起保持器") }
+        if !BluetoothHoldPolicy.shouldHold(isBluetooth: true) { fails.append("藍牙應起保持器") }
+        let base = BluetoothInputHolder.FormatSnapshot(inRate: 48_000, inCh: 1, outRate: 48_000)
+        var inRate = base; inRate.inRate = 24_000
+        var inCh = base; inCh.inCh = 2
+        var outRate = base; outRate.outRate = 24_000
+        if !BluetoothHoldPolicy.settled(baseline: base, now: inRate) { fails.append("輸入取樣率變了應算接上") }
+        if !BluetoothHoldPolicy.settled(baseline: base, now: inCh) { fails.append("輸入聲道數變了應算接上") }
+        if !BluetoothHoldPolicy.settled(baseline: base, now: outRate) { fails.append("輸出取樣率變了應算接上") }
+        if BluetoothHoldPolicy.settled(baseline: base, now: base) { fails.append("全同不應算接上") }
+        if BluetoothHoldPolicy.settleTimeout != 1.5 { fails.append("settleTimeout 應為 1.5(得 \(BluetoothHoldPolicy.settleTimeout))") }
+        if BluetoothHoldPolicy.pollInterval != 0.1 { fails.append("pollInterval 應為 0.1(得 \(BluetoothHoldPolicy.pollInterval))") }
+        return Result(name: "AUD-38 藍牙保持器決策", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "shouldHold 2 案、settled 4 案、常數 2 案全對" : fails.joined(separator: ";"))
+    }
+
+    // AUD-39(#2529／BUG-35):建引擎前「系統預設輸入是否已穩定」與「保持器 baseline 已是 HFP」的純決策。
+    static func micDevicePolicy() -> Result {
+        var fails: [String] = []
+        let ids: [AudioDeviceID] = [41, 77, 93]
+        if !MicDevicePolicy.defaultInputSettled(defaultID: 41, deviceIDs: ids, removedID: 93) { fails.append("預設在清單且≠移除應穩定") }
+        if MicDevicePolicy.defaultInputSettled(defaultID: 93, deviceIDs: ids, removedID: 93) { fails.append("預設＝移除那顆不應穩定") }
+        if MicDevicePolicy.defaultInputSettled(defaultID: 55, deviceIDs: ids, removedID: nil) { fails.append("預設不在清單不應穩定") }
+        if MicDevicePolicy.defaultInputSettled(defaultID: 41, deviceIDs: [], removedID: nil) { fails.append("清單空不應穩定") }
+        typealias Snap = BluetoothInputHolder.FormatSnapshot
+        if !BluetoothHoldPolicy.alreadyHFP(Snap(inRate: 24_000, inCh: 1, outRate: 24_000)) { fails.append("24000/1/24000 應是已 HFP") }
+        if BluetoothHoldPolicy.alreadyHFP(Snap(inRate: 48_000, inCh: 1, outRate: 48_000)) { fails.append("48000/1/48000 不是 HFP") }
+        if BluetoothHoldPolicy.alreadyHFP(Snap(inRate: 24_000, inCh: 1, outRate: 48_000)) { fails.append("輸入 24000、輸出 48000 不算已 HFP") }
+        if BluetoothHoldPolicy.settleTimeout != 1.5 { fails.append("保持器 settleTimeout 應為 1.5(得 \(BluetoothHoldPolicy.settleTimeout))") }
+        return Result(name: "AUD-39 預設輸入穩定與已 HFP 判定", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "defaultInputSettled 4 案、alreadyHFP 3 案、settleTimeout 1.5 全對" : fails.joined(separator: ";"))
+    }
+
     private final class ErrorBox: @unchecked Sendable { var error: Error? }
 
     // AUD-16/23 合成驗證 Path A「先對齊再消」:echo = 0.35·ref[i-D],D=100ms(遠超
@@ -524,14 +615,24 @@ public enum SelfTest {
         let noRepeat = SysTrackWatchdog.shouldWarnSilent(elapsed: 200, silentFor: 60, alreadyWarned: true, warnAfter: warnAfter)
         // ④ 重建:buffer 仍新鮮(1s,沒停流)但持續真靜音 25s → 仍應嘗試重建(BUG-24 關鍵:
         //    舊邏輯只看 buffer 新鮮度會判「活著」而完全不重建)
-        let rebuildOnSilent = SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 0, sinceLastRebuild: 5, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3)
+        let rebuildOnSilent = SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 0, sinceLastRebuild: 5, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3, rebuilding: false)
         // ⑤ 達上限即停(rebuildCount=3)
-        let capHolds = !SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 3, sinceLastRebuild: 5, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3)
+        let capHolds = !SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 3, sinceLastRebuild: 5, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3, rebuilding: false)
         // ⑥ 冷卻中不重建(距上次重建僅 1s < 2s)
-        let cooldownHolds = !SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 0, sinceLastRebuild: 1, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3)
+        let cooldownHolds = !SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 0, sinceLastRebuild: 1, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3, rebuilding: false)
+        // ⑦⑧ AUD-39:重建進行中(tap 正在佇列上拆建)不再觸發——不論是 buffer 停流還是持續靜音。
+        let rebuildingHoldsStale = !SysTrackWatchdog.shouldRebuild(bufferStaleFor: 10, silentFor: 0, rebuildCount: 0, sinceLastRebuild: 5, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3, rebuilding: true)
+        let rebuildingHoldsSilent = !SysTrackWatchdog.shouldRebuild(bufferStaleFor: 1, silentFor: 25, rebuildCount: 0, sinceLastRebuild: 5, deadAfter: 5, silentAfter: silentRebuild, cooldown: 2, maxRebuilds: 3, rebuilding: true)
+        let timeoutPinned = SysTrackWatchdog.rebuildTimeout == 20   // AUD-39 D(G4)
+        // ⑨ AUD-40:buffer 停流時——輸出裝置閒置 ⇒ 略過;在跑或讀不到 ⇒ 重建。
+        let idleSkips = SysTrackWatchdog.staleAction(outputRunning: false) == .skipIdle
+        let runningRebuilds = SysTrackWatchdog.staleAction(outputRunning: true) == .rebuild
+        let unknownRebuilds = SysTrackWatchdog.staleAction(outputRunning: nil) == .rebuild
         let ok = midDeath && !shortPause && !noRepeat && rebuildOnSilent && capHolds && cooldownHolds
+            && rebuildingHoldsStale && rebuildingHoldsSilent && timeoutPinned
+            && idleSkips && runningRebuilds && unknownRebuilds
         return Result(name: "BUG-24 對方軌流動但全零看門狗", passed: ok,
-                      detail: "中途死警告=\(midDeath) 短停頓靜音=\(shortPause) 已警告不重複=\(noRepeat) 靜音重建=\(rebuildOnSilent) 上限=\(capHolds) 冷卻=\(cooldownHolds)")
+                      detail: "中途死警告=\(midDeath) 短停頓靜音=\(shortPause) 已警告不重複=\(noRepeat) 靜音重建=\(rebuildOnSilent) 上限=\(capHolds) 冷卻=\(cooldownHolds) 重建中停流不觸發=\(rebuildingHoldsStale) 重建中靜音不觸發=\(rebuildingHoldsSilent) 重建逾時 20 秒=\(timeoutPinned) 閒置略過=\(idleSkips) 在跑重建=\(runningRebuilds) 讀不到重建=\(unknownRebuilds)")
     }
 
     /// BUG-25:藍牙輸出時鐘抖動讓 IOProc 漏拍,漏掉的樣本使左軌波形跳接=滿軌破音
@@ -787,6 +888,9 @@ public enum SelfTest {
             (.sysRestarted(reason: .outputDeviceChanged), "偵測到系統音訊擷取中斷(系統輸出裝置變更),已自動重新啟動"),
             (.micSilentBluetooth,
              "⚠️ 你選的是藍牙麥克風,整場可能收不到聲音(常被會議 app 佔住或掉窄頻)— 請到設定改用內建或 USB 麥克風"),
+            // AUD-38(#2529)新增,期望值＝工單 §7 的模板(不在 8a84306 裡)。
+            (.micBluetoothUnstable(device: "AirPods Pro"),
+             "⚠️ 藍牙麥克風「AirPods Pro」在此系統無法穩定擷取（HFP 格式反覆切換），你軌（右）已停止自動重建 — 請切回內建或有線麥克風"),
             (.micSilent, "你的麥克風似乎沒收到聲音 — 請到設定確認「你的麥克風」選對裝置"),
             (.sysSilent,
              "⚠️ 對方(系統音訊)沒收到聲音 — 若用藍牙耳機當輸出,通話會走 HFP/電話模式而擷取不到對方,請改用內建喇叭或有線輸出;並確認會議音訊在這台 Mac 上播放"),
@@ -818,11 +922,11 @@ public enum SelfTest {
             .micSwitched(device: "X"), .micSwitchFailed(device: "X"),
             .micReconnected(reason: .signalLost, device: "X"),
             .sysRestarted(reason: .persistentSilence),
-            .micSilentBluetooth, .micSilent, .deviceChanged
+            .micSilentBluetooth, .micBluetoothUnstable(device: "X"), .micSilent, .deviceChanged
         ]
         for w in clears where !w.clearsWhenSysSignalReturns { fails.append("該收沒收:\(w.template.prefix(8))") }
         for w in keeps where w.clearsWhenSysSignalReturns { fails.append("不該收卻收:\(w.template.prefix(8))") }
-        if clears.count + keeps.count != 12 { fails.append("警示種類數變了,案例要補") }
+        if clears.count + keeps.count != 13 { fails.append("警示種類數變了,案例要補") }
 
         // ② 再跳門檻:沒自動收起過照舊 12 秒且看 silentFor;收起過改看真訊號與 60 秒。
         let before = SysTrackWatchdog.silentWarnInputs(autoDismissed: false, silentFor: 13,

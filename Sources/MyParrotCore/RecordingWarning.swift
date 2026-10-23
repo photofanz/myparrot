@@ -90,6 +90,8 @@ public enum RecordingWarning: Sendable, Equatable {
     case sysRebuildMaybeStillSilent
     case sysRestarted(reason: SysRebuildReason)
     case micSilentBluetooth
+    /// AUD-38(#2529):藍牙麥 HFP 格式反覆切換,MicCapture 震盪鎖已停止自動重建。
+    case micBluetoothUnstable(device: String)
     case micSilent
     case sysSilent
     case deviceChanged
@@ -116,6 +118,8 @@ public enum RecordingWarning: Sendable, Equatable {
             return "偵測到系統音訊擷取中斷(%@),已自動重新啟動"
         case .micSilentBluetooth:
             return "⚠️ 你選的是藍牙麥克風,整場可能收不到聲音(常被會議 app 佔住或掉窄頻)— 請到設定改用內建或 USB 麥克風"
+        case .micBluetoothUnstable:
+            return "⚠️ 藍牙麥克風「%@」在此系統無法穩定擷取（HFP 格式反覆切換），你軌（右）已停止自動重建 — 請切回內建或有線麥克風"
         case .micSilent:
             return "你的麥克風似乎沒收到聲音 — 請到設定確認「你的麥克風」選對裝置"
         case .sysSilent:
@@ -129,7 +133,7 @@ public enum RecordingWarning: Sendable, Equatable {
     /// 依序對應 `template` 裡的 `%@`。
     public var arguments: [WarningArgument] {
         switch self {
-        case .micSwitched(let device), .micSwitchFailed(let device):
+        case .micSwitched(let device), .micSwitchFailed(let device), .micBluetoothUnstable(let device):
             return [.raw(device)]
         case .micReconnected(let reason, let device):
             // 裝置名是系統字串不翻;沒有裝置名時退回可翻的「系統預設」。
@@ -157,7 +161,7 @@ public enum RecordingWarning: Sendable, Equatable {
         case .sysSilent, .sysRebuildMaybeStillSilent: return true
         case .engineChangeDeferred, .whisperModelMissing, .cloudNotConfigured,
              .micSwitched, .micSwitchFailed, .micReconnected, .sysRestarted,
-             .micSilentBluetooth, .micSilent, .deviceChanged: return false
+             .micSilentBluetooth, .micBluetoothUnstable, .micSilent, .deviceChanged: return false
         }
     }
 }

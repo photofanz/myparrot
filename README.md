@@ -17,6 +17,14 @@
 <img src="docs/img/main-window-dark.png" width="560" alt="Main window (dark) — obsidian controller">
 </p>
 
+## What's new in 0.5.1
+
+- **Fixed: switching the mic to a Bluetooth headset mid-recording stalled the whole app** — the engine rebuild ran on the main thread (about 6 s per attempt while the headset enters call mode) and could loop as the link flipped between A2DP and HFP. Microphone engines are now built on a background queue, the new engine is prepared *before* the old one stops (the gap in your track is 0.1–0.3 s instead of ~6 s), and a Bluetooth input is held in call mode while in use so its format stays stable. Expect a 5–6 s "switching…" spinner on the mic pill; the rest of the app stays responsive.
+- **Fixed: a Bluetooth mic disconnecting mid-recording left your track silent for up to 20 s** — the fallback to the built-in mic now completes in about a second.
+- **Fixed: false "system audio restarted" banners when nothing is playing on the Mac** — the watchdog now checks whether the output device is actually running before rebuilding the tap.
+- Device-list refresh and system-audio tap rebuilds also moved off the main thread; a stuck mic switch times out after 20 s instead of hanging.
+- Known: a Bluetooth mic is still phone quality for both sides (HFP); if a Bluetooth headset *reconnects* while you record on the built-in mic, your track may drop ~8 s while the engine self-heals (fix planned); an iPhone Continuity mic takes 1.5–2 s to switch.
+
 ## What's new in 0.5.0
 
 - **New UI (v2)** — Siri Remote–style controller (silver aluminium in light mode, obsidian in dark) and a panel workspace: transcript / notes / minutes columns you can toggle, drag to reorder and resize; the file pane gets search, sidecar badges, rename and move-to-Trash.
@@ -96,7 +104,7 @@ First launch asks for **Microphone**, **Speech Recognition**, and **System Audio
 
 1. **Signing & permission persistence.** macOS ties permission grants (TCC) to the signing identity. `build-app.sh` auto-picks the best available: an Apple Development / Developer ID certificate (has a Team ID → **permissions survive rebuilds**) → a self-signed cert → ad-hoc (**permissions re-asked on every rebuild**). If you have any Apple certificate, the script will find and use it.
 2. **Keep the `.app` out of iCloud-synced folders.** iCloud Drive re-applies Finder xattrs that repeatedly break code signatures. This is why the script installs to `~/Applications`.
-3. **Don't use a Bluetooth mic.** The moment any app opens a Bluetooth microphone, the whole link drops from A2DP to narrowband HFP — the *other side's* audio degrades to phone quality too. Wear the headset for listening; speak into the built-in or a wired/USB mic. (MyParrot's auto-selection already avoids Bluetooth mics; picking one manually is allowed but warned.)
+3. **Bluetooth mics work, but they are phone quality — for both sides.** The moment any app opens a Bluetooth microphone, the whole link drops from A2DP to narrowband HFP, so the *other side's* audio degrades too. Prefer the built-in or a wired/USB mic and wear the headset for listening (auto-selection already avoids Bluetooth mics). If you do switch to one mid-recording (0.5.1+), expect a 5–6 s "switching…" spinner while the headset enters call mode; if it disconnects, the app falls back to the built-in mic within about a second.
 4. **First `swift build` fails right after clone?** Run `bash scripts/fetch-whisper.sh` first. The Whisper engine binary (~35MB) isn't checked into git — the script builds it from source once (needs Xcode + `cmake`).
 
 ## `myparrot` CLI (since 0.3.0)
@@ -131,7 +139,9 @@ A `transcribe` hook can **replace** the built-in transcription (bring your own A
 | --- | --- |
 | Long meetings (>30 min) | The two capture clocks drift slowly; sample-accurate sync is planned |
 | Bluetooth headset as *output* while any app holds a BT mic | Phone-quality ceiling — protocol limitation (HFP), not fixable in software |
-| Hot-swapping *to* a Bluetooth mic mid-recording | One audible pop at the switch (OS profile change) |
+| Hot-swapping *to* a Bluetooth mic mid-recording | 5–6 s while the headset enters call mode (shown as "switching…"); one audible pop; the gap in your track is under 0.3 s |
+| Bluetooth headset *reconnecting* while recording on the built-in mic | Your track may drop ~8 s while the engine self-heals — fix planned |
+| iPhone Continuity mic | 1.5–2 s to switch (device start-up time) |
 | Capture gaps shorter than 0.3 s | Not silence-padded (trade-off that eliminates padding clicks); the track may shift ≤0.3 s early in that window |
 | Echo cancellation | Offline post-process only, off by default |
 | GUI and CLI recording at the same time | A global lease allows one writer at a time; verified with synthetic writers, not yet with two real microphone recordings |

@@ -5,6 +5,7 @@ import Observation
 import AudioToolbox
 import AVFoundation
 import Speech
+import os
 
 @MainActor
 @Observable
@@ -98,7 +99,8 @@ public final class RecordingController {
     private let system = SystemAudioCapture()
     // `var` so the live mic engine can be swapped mid-recording (hot-swap, AUD-20).
     private var mic = MicCapture()
-    private let monitor = MicCapture()
+    // `var`(AUD-38 F6):每次開麥克風測試都建新實例,不在 tap 可能還在跑時改寫舊實例的 closure。
+    private var monitor = MicCapture()
     private let recorder = StereoRecorder()
     // `var`:引擎可依設定切換(TR-14),rebuildTranscribers() 重建。
     private var fileTranscriber: any TranscriptionProvider
@@ -190,9 +192,31 @@ public final class RecordingController {
     private var lastMicLevelAt = Date()
     private var micAutoRebuildCount = 0
     private var lastMicRebuildAt = Date.distantPast
-    private static let micDeadAfter: TimeInterval = 3        // no buffers this long → rebuild
-    private static let micRebuildCooldown: TimeInterval = 2  // min gap between auto-rebuilds
-    private static let micMaxConsecutiveRebuilds = 3         // give up & warn after this many failed in a row
+    // 門檻(3 秒無 buffer／冷卻 2 秒／連續 3 次／連續流動 10 秒才歸零)只有一份,在 `MicWatchdogPolicy`(AUD-38)。
+
+    // MARK: AUD-38(#2529)切麥／重建非阻塞
+    /// 切麥或自動重建進行中:UI 禁用麥克風選單＋小轉圈,看門狗不計時。
+    public private(set) var isSwitchingMic = false
+    /// 被 MicCapture 震盪鎖住的裝置 uid;換裝置就清掉。非 nil 時看門狗不重建。
+    private var micLockedUID: String?
+    /// 這一輪你軌 buffer 開始連續流動的時間(看門狗計數歸零用)。
+    private var micFlowSince: Date?
+    /// 每次切麥／重建／停止錄音遞增;completion 帶回的世代不符就丟掉(連新引擎一起 stop,避免孤兒引擎)。
+    private var micSwapGeneration = 0
+    /// 麥克風測試(monitor)的世代:stopMicMonitor 之後才回來的 completion 不得把 isMonitoring 設回 true。
+    private var monitorGeneration = 0
+    /// 沒選裝置(跟系統預設)時被鎖,`micLockedUID` 存這個哨兵值——要非 nil 看門狗才會停手;
+    /// 任何真實 uid 都 ≠ 它,所以選到任何裝置或重建落到真實裝置都算「換裝置」而解鎖。
+    private static let micLockedDefaultSentinel = "<default>"
+    /// 切麥／重建成功後的無聲警告緩衝:這個時間之前不判「你的麥克風沒收到聲音」(切換中也不判)。
+    private var micSilenceGraceUntil = Date.distantPast
+    /// AUD-38 F5:切麥／重建建出來、completion 還沒回來的實例;停錄時一併 stop,避免晚到的引擎餵進下一場。
+    private var inflightMics: [MicCapture] = []
+    /// AUD-39:裝置清單背景刷新的世代;較舊的結果回來就丟掉。
+    private var refreshGeneration = 0
+    /// AUD-39:對方軌 tap 重建進行中(看門狗與輸出裝置 listener 不再觸發);世代丟掉停錄後才回來的結果。
+    private var isRebuildingSys = false
+    private var sysRebuildGeneration = 0
 
     // MARK: - TR-27 / #976:Whisper 模型閒置自動釋放
     /// 閒置多久後把 whisper context 還給系統。實測(2026-08-25,GUI release fc5eff4):
@@ -426,7 +450,7 @@ public final class RecordingController {
         loadRecordings()
         loadInterrupted()            // #1697:標記對照現況修剪(檔案沒了/已轉好就清掉)
         resumePendingConversions()
-        refreshDevices()
+        refreshDevicesSync()   // AUD-39:開場這一次維持同步——CLI 建好 controller 立刻讀 availableInputDevices
         installDeviceListener()
         live.onUpdate = { [weak self] lines in self?.liveTranscript = lines }
         if let note = built.note { warning = note }
@@ -503,19 +527,45 @@ public final class RecordingController {
         }
     }
 
-    public func refreshDevices() {
-        availableInputDevices = AudioDevices.inputDevices()
+    /// AUD-39:**非阻塞**刷新裝置清單。`AudioDevices.inputDevices()` 逐顆讀裝置屬性(名稱、傳輸類型…),
+    /// 藍牙狀態變動時會等 HAL;搬到背景 utility 佇列,結果回 main 套用。較舊的結果(refreshGeneration
+    /// 不符)丟掉。開場那一次用 `refreshDevicesSync()`。
+    public func refreshDevices() { refreshDevices(then: nil) }
+
+    /// `then`:套用完清單後(main)要做的事——listener 用它判斷錄音中的裝置是否消失。
+    private func refreshDevices(then: (@MainActor @Sendable () -> Void)?) {
+        refreshGeneration += 1
+        let gen = refreshGeneration
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let list = AudioDevices.inputDevices()
+            let def = AudioDevices.defaultInputDevice()
+            Task { @MainActor in
+                guard let self, gen == self.refreshGeneration else { return }
+                self.applyDeviceList(list, defaultDevice: def)
+                then?()
+            }
+        }
+    }
+
+    /// 開場用的同步版(CLI 的 `record`／互動選單建好 controller 就讀 `availableInputDevices`、GUI 第一畫面要有選擇)。
+    private func refreshDevicesSync() {
+        applyDeviceList(AudioDevices.inputDevices(), defaultDevice: AudioDevices.defaultInputDevice())
+    }
+
+    /// 套用裝置清單＋選擇邏輯(main;不再打 CoreAudio)。
+    private func applyDeviceList(_ list: [AudioInputDevice], defaultDevice: AudioInputDevice?) {
+        availableInputDevices = list
         // Keep a still-valid current selection — a manual choice (incl. a Bluetooth
         // mic for testing) or an in-session main-screen hot-swap is always respected.
-        if let sel = selectedInputDevice, availableInputDevices.contains(where: { $0.id == sel.id }) { return }
+        if let sel = selectedInputDevice, list.contains(where: { $0.id == sel.id }) { return }
         // No valid selection (e.g. fresh launch): the *Settings* choice wins. Restore
         // it by UID — the persistent default — and only soft-default if it's absent.
         if let uid = defaults.string(forKey: preferredInputUIDKey),
-           let saved = availableInputDevices.first(where: { $0.uid == uid }) {
+           let saved = list.first(where: { $0.uid == uid }) {
             selectedInputDevice = saved
             return
         }
-        selectedInputDevice = autoSelectInput()
+        selectedInputDevice = autoSelectInput(defaultDevice: defaultDevice)
     }
 
     private let preferredInputUIDKey = "preferredInputUID"
@@ -541,10 +591,17 @@ public final class RecordingController {
     }
 
     private func applyMicSelection(_ device: AudioInputDevice) {
+        let live = state == .recording || state == .paused
+        // AUD-38:切換中再選 ⇒ 忽略(UI 已禁用,這是保險);不先改 selectedInputDevice,選單才不會跟實際不符。
+        if live && isSwitchingMic {
+            os_log("MyParrot mic: 切換中,忽略再次選擇 %{public}@", device.name)
+            return
+        }
         let previous = selectedInputDevice
         selectedInputDevice = device
+        if device.uid != micLockedUID { micLockedUID = nil }   // AUD-38:換裝置解鎖
         // Idle/finished: nothing live to swap — the next startRecording() picks it up.
-        guard state == .recording || state == .paused else { return }
+        guard live else { return }
         hotSwapMic(to: device, fallback: previous)
     }
 
@@ -555,40 +612,167 @@ public final class RecordingController {
     /// fresh MicCapture instance to avoid stale AUHAL/format caching. Falls back to the
     /// previous device if the new one won't start, so 你 軌 is never silently lost (AUD-21).
     private func hotSwapMic(to device: AudioInputDevice, fallback: AudioInputDevice?) {
+        guard !isSwitchingMic else {
+            os_log("MyParrot mic: 切換中,忽略再次切換到 %{public}@", device.name)
+            return
+        }
+        isSwitchingMic = true
+        micSwapGeneration += 1
+        let gen = micSwapGeneration
+        scheduleSwitchTimeout(gen)
+        // G5:先記住舊實例是不是震盪鎖住的(鎖住＝引擎已停、不收音),再清鎖。
+        let oldWasLocked = micLockedUID != nil
+        micLockedUID = nil
         let old = mic
-        old.stop()
-        // Re-arm the 8s dead-channel warning for BOTH outcomes: `old` is already stopped,
-        // so micPeak must not keep the previous device's high value — otherwise the
-        // silent-mic check never re-fires after a failed swap (AUD-22).
-        micPeak = 0
-        silentMicWarned = false
-        let fresh = MicCapture()
-        fresh.gain = inputGain
-        fresh.onLevel = old.onLevel
-        fresh.onBuffer = old.onBuffer
-        do {
-            try fresh.start(deviceID: device.id)
-            mic = fresh
-            warning = .micSwitched(device: device.name)
-        } catch {
-            // New device failed — fall back to the previous one so 你軌 isn't lost (AUD-21).
-            let restore = MicCapture()
-            restore.gain = inputGain
-            restore.onLevel = old.onLevel
-            restore.onBuffer = old.onBuffer
-            if (try? restore.start(deviceID: fallback?.id)) != nil {
-                mic = restore
-                selectedInputDevice = fallback
-                lastError = "切換到「\(device.name)」失敗,已沿用原麥克風:\(error)"
-            } else {
-                // BOTH the new device and the fallback failed to start: 你軌 is now dead.
-                // Warn loudly (the old "已沿用原麥克風" text would be a lie) and restore the
-                // device label so the picker matches reality (AUD-21/22).
-                selectedInputDevice = fallback
-                warning = .micSwitchFailed(device: device.name)
-                lastError = "麥克風切換失敗,你軌已中斷:\(error)"
+        old.suspendSelfHeal()   // G1:old 照錄,但它的自癒不再排進共用佇列跟 fresh.prepare 搶
+        micFlowSince = nil
+        let fresh = makeMic(like: old)
+        inflightMics.append(fresh)
+        // AUD-39 先建後拆:fresh 先 prepare(保持器、等系統預設輸入、建 AUHAL、裝 tap,藍牙下可能好幾秒),
+        // 這段期間 old 照錄;prepare 好了才 stop old、run fresh——你軌空檔只剩「拆 old＋start fresh」。
+        fresh.prepare(deviceID: device.id, isBluetooth: device.isBluetooth, avoidDeviceID: nil) { [weak self] error in
+            Task { @MainActor in
+                guard let self else { fresh.stop(); return }
+                guard gen == self.micSwapGeneration,
+                      self.state == .recording || self.state == .paused else {
+                    self.inflightMics.removeAll { $0 === fresh }
+                    fresh.stop()
+                    // 逾時作廢、old 還是現役且沒有新的切換 ⇒ old 繼續錄,恢復它的自癒。
+                    if self.mic === old, !self.isSwitchingMic { old.resumeSelfHeal() }
+                    return
+                }
+                if let error {
+                    self.inflightMics.removeAll { $0 === fresh }
+                    if oldWasLocked {
+                        // G5:old 是鎖死的(不收音)⇒ 不能「沿用」,走 restore 鏈在原裝置上起新實例。
+                        old.stop()
+                        self.restoreFallbackMic(old: old, fallback: fallback, failedDevice: device, error: error, gen: gen)
+                        return
+                    }
+                    // prepare 失敗:old 沒動、還在錄 ⇒ 你軌沒斷;選單退回原裝置、照舊文案告知(AUD-21 的結果)。
+                    old.resumeSelfHeal()
+                    self.micPeak = 0
+                    self.silentMicWarned = false
+                    self.selectedInputDevice = fallback
+                    self.lastError = "切換到「\(device.name)」失敗,已沿用原麥克風:\(error)"
+                    self.finishMicSwitch(succeeded: true)   // old 健康且繼續錄 ⇒ 看門狗從現在計時
+                    return
+                }
+                // Re-arm the 8s dead-channel warning for BOTH outcomes: `old` is about to stop,
+                // so micPeak must not keep the previous device's high value — otherwise the
+                // silent-mic check never re-fires after a failed swap (AUD-22).
+                self.micPeak = 0
+                self.silentMicWarned = false
+                old.stop()   // 立刻靜音;共用佇列上拆完 old 才輪到 fresh.run
+                fresh.run { [weak self] error in
+                    Task { @MainActor in
+                        guard let self else { fresh.stop(); return }
+                        self.inflightMics.removeAll { $0 === fresh }
+                        guard gen == self.micSwapGeneration,
+                              self.state == .recording || self.state == .paused else { fresh.stop(); return }
+                        guard let error else {
+                            self.mic = fresh
+                            self.warning = .micSwitched(device: device.name)
+                            self.finishMicSwitch(succeeded: true)
+                            return
+                        }
+                        // run 失敗時 old 已停 ⇒ 走原本的 fallback:在原裝置上重開,你軌才不會斷(AUD-21)。
+                        self.restoreFallbackMic(old: old, fallback: fallback, failedDevice: device, error: error, gen: gen)
+                    }
+                }
             }
         }
+    }
+
+    /// AUD-21 的 fallback 鏈:old 已停(run 失敗,或 G5 鎖死的 old),在原裝置上起新實例。
+    /// 成功 ⇒ 沿用原麥克風(`micLockedUID` 保持 nil);再失敗 ⇒ `.micSwitchFailed`。
+    private func restoreFallbackMic(old: MicCapture, fallback: AudioInputDevice?, failedDevice device: AudioInputDevice,
+                                    error: Error, gen: Int) {
+        let restore = makeMic(like: old)
+        inflightMics.append(restore)
+        restore.start(deviceID: fallback?.id, isBluetooth: fallback?.isBluetooth ?? false) { [weak self] restoreError in
+            Task { @MainActor in
+                guard let self else { restore.stop(); return }
+                self.inflightMics.removeAll { $0 === restore }
+                guard gen == self.micSwapGeneration,
+                      self.state == .recording || self.state == .paused else { restore.stop(); return }
+                if restoreError == nil {
+                    self.mic = restore
+                    self.selectedInputDevice = fallback
+                    self.lastError = "切換到「\(device.name)」失敗,已沿用原麥克風:\(error)"
+                    self.finishMicSwitch(succeeded: true)
+                } else {
+                    // BOTH the new device and the fallback failed to start: 你軌 is now dead.
+                    // Warn loudly (the old "已沿用原麥克風" text would be a lie) and restore the
+                    // device label so the picker matches reality (AUD-21/22).
+                    self.selectedInputDevice = fallback
+                    self.warning = .micSwitchFailed(device: device.name)
+                    self.lastError = "麥克風切換失敗,你軌已中斷:\(error)"
+                    self.finishMicSwitch(succeeded: false)
+                }
+            }
+        }
+    }
+
+    /// AUD-38:錄音用的新 MicCapture——gain 用目前設定,onLevel／onBuffer 從 `old` 搬,掛震盪鎖回呼。
+    /// (monitor 不走這裡:它不設 onLocked。)
+    private func makeMic(like old: MicCapture?) -> MicCapture {
+        let m = MicCapture()
+        m.gain = inputGain
+        if let old {
+            m.onLevel = old.onLevel
+            m.onBuffer = old.onBuffer
+        }
+        wireLockHandler(m)
+        return m
+    }
+
+    /// 震盪鎖回呼:只認目前在用的那個實例、還在錄音中、而且不在切換中(停錄、已換掉的舊實例、
+    /// 切麥途中舊實例晚到的通知都不算,否則會把鎖記到新選的裝置上;AUD-38 F3)。
+    private func wireLockHandler(_ m: MicCapture) {
+        m.onLocked = { [weak self, weak m] in
+            Task { @MainActor in
+                guard let self, let m, self.mic === m, !self.isSwitchingMic,
+                      self.state == .recording || self.state == .paused else { return }
+                self.handleMicLocked()
+            }
+        }
+    }
+
+    /// 切麥／重建結束(成功、fallback、雙失敗都要叫)。成功＝有一個新引擎在跑,看門狗從現在重新計時;
+    /// `resetRebuildCount` 只給使用者手動切麥用——自動重建成功不歸零,計數只在 buffer 連續流動 10 秒後歸零(§2.5)。
+    private func finishMicSwitch(succeeded: Bool, resetRebuildCount: Bool = true) {
+        isSwitchingMic = false
+        micFlowSince = nil
+        if succeeded {
+            lastMicLevelAt = Date()
+            micSilenceGraceUntil = Date().addingTimeInterval(8)   // 新引擎重新給 8 秒緩衝再判無聲
+            if resetRebuildCount { micAutoRebuildCount = 0 }
+        }
+    }
+
+    /// AUD-38 F4:切麥／重建／開錄的 start 超過 `MicWatchdogPolicy.switchTimeout` 還沒回來 ⇒ 遞增世代讓晚到的
+    /// completion 作廢(它會 stop 自己的新引擎)、結束切換狀態(選單解禁、看門狗恢復計時)、報錯。
+    private func scheduleSwitchTimeout(_ gen: Int) {
+        let startedAt = Date()
+        DispatchQueue.main.asyncAfter(deadline: .now() + MicWatchdogPolicy.switchTimeout) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isSwitchingMic, gen == self.micSwapGeneration,
+                      MicWatchdogPolicy.switchTimedOut(startedAt: startedAt, now: Date()) else { return }
+                self.micSwapGeneration += 1
+                self.finishMicSwitch(succeeded: false)
+                self.lastError = "麥克風切換逾時（\(Int(MicWatchdogPolicy.switchTimeout)) 秒），請重選裝置"
+                os_log("MyParrot mic: 切換逾時(%ld 秒),作廢這一輪 start", Int(MicWatchdogPolicy.switchTimeout))
+            }
+        }
+    }
+
+    /// AUD-38:MicCapture 震盪鎖觸發(藍牙 HFP 格式 20 秒內反覆切換)⇒ 記住鎖住的裝置、跳橫幅、看門狗不再重建。
+    private func handleMicLocked() {
+        micLockedUID = selectedInputDevice?.uid ?? Self.micLockedDefaultSentinel
+        warning = .micBluetoothUnstable(device: selectedInputDevice?.name ?? "藍牙麥克風")
+        isSwitchingMic = false
+        youLevel = 0
     }
 
     /// AUD-28 / BUG-18: rebuild the live mic on the *current* device WITHOUT a user-
@@ -597,23 +781,76 @@ public final class RecordingController {
     /// UID (the numeric id may have been reassigned on replug), falling back to the system
     /// default if the chosen device is gone. No fallback chain like hotSwapMic; if it fails
     /// the watchdog retries up to the consecutive cap, then the 8s warning fires.
-    private func rebuildCurrentMic(reason: MicRebuildReason) {
-        let available = AudioDevices.inputDevices()
-        let device = selectedInputDevice.flatMap { sel in available.first { $0.uid == sel.uid } }
-                     ?? AudioDevices.defaultInputDevice()
+    private func rebuildCurrentMic(reason: MicRebuildReason, avoidDeviceID: AudioDeviceID? = nil) {
+        guard !isSwitchingMic else {
+            os_log("MyParrot mic: 切換中,略過自動重建(%{public}@)", reason.zhTW)
+            return
+        }
+        isSwitchingMic = true
+        micSwapGeneration += 1
+        let gen = micSwapGeneration
+        scheduleSwitchTimeout(gen)
+        micFlowSince = nil
+        // G1:自動重建時 old 已經死了(沒 buffer／裝置消失),立刻停掉,不等 prepare;先建後拆只留給使用者切麥。
+        mic.stop()
+        // AUD-39:裝置解析(逐顆讀屬性)在背景做,回 main 才 prepare/run。
+        let selected = selectedInputDevice
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let available = AudioDevices.inputDevices()
+            let device = selected.flatMap { sel in available.first { $0.uid == sel.uid } }
+                         ?? AudioDevices.defaultInputDevice()
+            Task { @MainActor in
+                guard let self, gen == self.micSwapGeneration,
+                      self.state == .recording || self.state == .paused else { return }
+                self.rebuildMic(on: device, reason: reason, avoidDeviceID: avoidDeviceID, gen: gen)
+            }
+        }
+    }
+
+    /// `rebuildCurrentMic` 的後半(main):先建後拆。
+    private func rebuildMic(on device: AudioInputDevice?, reason: MicRebuildReason, avoidDeviceID: AudioDeviceID?, gen: Int) {
         let old = mic
-        old.stop()
-        let fresh = MicCapture()
-        fresh.gain = inputGain
-        fresh.onLevel = old.onLevel
-        fresh.onBuffer = old.onBuffer
-        if (try? fresh.start(deviceID: device?.id)) != nil {
-            mic = fresh
-            if let device { selectedInputDevice = device }   // keep picker in sync if we fell back
-            lastMicLevelAt = Date()
-            warning = .micReconnected(reason: reason, device: device?.name)
-        } else {
-            lastError = "麥克風自動重建失敗(\(reason.zhTW)) — 將持續重試"
+        let fresh = makeMic(like: old)
+        inflightMics.append(fresh)
+        // AUD-39 等預設輸入:`avoidDeviceID`＝剛消失的裝置(listener 帶入),建 AUHAL 前等系統預設輸入
+        // 換掉它(BUG-35 真機 20.5 秒)。old 在 rebuildCurrentMic 已先停(G1);prepare 失敗 ⇒ 下一輪看門狗再試。
+        fresh.prepare(deviceID: device?.id, isBluetooth: device?.isBluetooth ?? false,
+                      avoidDeviceID: avoidDeviceID) { [weak self] error in
+            Task { @MainActor in
+                guard let self else { fresh.stop(); return }
+                guard gen == self.micSwapGeneration,
+                      self.state == .recording || self.state == .paused else {
+                    self.inflightMics.removeAll { $0 === fresh }
+                    fresh.stop()
+                    return
+                }
+                if let error {
+                    self.inflightMics.removeAll { $0 === fresh }
+                    self.lastError = "麥克風自動重建失敗(\(reason.zhTW)) — 將持續重試"
+                    os_log("MyParrot mic: 自動重建 prepare 失敗:%{public}@", "\(error)")
+                    self.finishMicSwitch(succeeded: false)
+                    return
+                }
+                fresh.run { [weak self] error in
+                    Task { @MainActor in
+                        guard let self else { fresh.stop(); return }
+                        self.inflightMics.removeAll { $0 === fresh }
+                        guard gen == self.micSwapGeneration,
+                              self.state == .recording || self.state == .paused else { fresh.stop(); return }
+                        if error == nil {
+                            self.mic = fresh
+                            if let device { self.selectedInputDevice = device }   // keep picker in sync if we fell back
+                            // 落到別顆裝置＝換裝置解鎖;鎖的是哨兵值(系統預設)時,任何真實 uid 都算不同。
+                            if device?.uid != self.micLockedUID { self.micLockedUID = nil }
+                            self.warning = .micReconnected(reason: reason, device: device?.name)
+                            self.finishMicSwitch(succeeded: true, resetRebuildCount: false)
+                        } else {
+                            self.lastError = "麥克風自動重建失敗(\(reason.zhTW)) — 將持續重試"
+                            self.finishMicSwitch(succeeded: false)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -625,25 +862,87 @@ public final class RecordingController {
     /// start() 都建新 UUID(見 SystemAudioCapture.swift),可安全反覆重建,不必
     /// 像 MicCapture 那樣另開新實例。
     private func rebuildSystemCapture(reason: SysRebuildReason) {
+        // AUD-39:拆建 tap＋aggregate 在 SystemAudioCapture 的序列佇列上做(藍牙狀態變動時會等 HAL),
+        // 重建中看門狗／輸出裝置 listener 不再觸發。stop 與 start 依序排進同一條序列佇列;
+        // 期間若停錄,停錄的 stop 排在後面、世代不符的結果直接丟掉。
+        isRebuildingSys = true
+        sysRebuildGeneration += 1
+        let gen = sysRebuildGeneration
+        let startedAt = DispatchTime.now()
+        scheduleSysRebuildTimeout(gen)   // G4
+        os_log("MyParrot sys: rebuild 開始 reason=%{public}@", reason.zhTW)   // AUD-39 M1
         system.stop()
-        do {
-            try system.start()
-            // Give the rebuilt tap a fresh grace window before it can be judged
-            // stale/silent again, so the bounded retries are spaced ~sysSilentRebuildAfter
-            // apart (a fair recovery chance) instead of firing back-to-back (BUG-24).
-            lastSysLevelAt = Date(); lastSysSignalAt = Date()
-            // BUG-24:別用「已自動重新啟動」的成功語氣蓋掉稍早那句可行動的 HFP 提示。
-            // 若這次重建是因「持續無聲」(silentSysWarned 已武裝),重建對 HFP 路由救不回
-            // 聲音,誆稱「已重啟」會變成停到錄音結束的假安心;改成不宣稱成功的合併訊息。
-            // BUG-28/B2 題 C:自動收起後的靜音觀察期內,持續無聲觸發的重建不再跳
-            // 橫幅——否則 20 秒的重建會先跳出來,60 秒的再跳門檻等於白設。
-            if let banner = SysTrackWatchdog.rebuildBanner(
-                    silentWarned: silentSysWarned, reason: reason,
-                    inRewarnGrace: sysWarningAutoDismissed && !silentSysWarned) {
-                warning = banner
+        system.start { [weak self] error in
+            Task { @MainActor in
+                guard let self, gen == self.sysRebuildGeneration else { return }
+                self.isRebuildingSys = false
+                self.finishSystemRebuild(reason: reason, error: error, startedAt: startedAt)
             }
-        } catch {
+        }
+    }
+
+    /// AUD-40(BUG-36):對方軌看門狗要重建前(buffer 停流或持續無聲),先在 SystemAudioCapture 的佇列上查目標輸出
+    /// 裝置在不在跑。閒置 ⇒ 略過(不跳橫幅、不加計數,`lastSysLevelAt`／`lastSysSignalAt` 推到現在,下一輪再看);
+    /// 在跑或讀不到 ⇒ 照舊重建(BUG-24 HFP 全零時輸出裝置在跑,行為不變)。
+    /// 檢查期間借用 `isRebuildingSys` 當互斥(看門狗與輸出 listener 不疊),世代照遞增。
+    private func checkOutputThenRebuild(reason: SysRebuildReason) {
+        isRebuildingSys = true
+        sysRebuildGeneration += 1
+        let gen = sysRebuildGeneration
+        system.checkOutputRunning { [weak self] running in
+            Task { @MainActor in
+                guard let self, gen == self.sysRebuildGeneration else { return }
+                self.isRebuildingSys = false
+                switch SysTrackWatchdog.staleAction(outputRunning: running) {
+                case .skipIdle:
+                    // 題 P1:兩個計時都推到現在,停流與持續無聲兩條路徑都要等下一輪才再看(lastSysRealSignalAt 不動,BUG-28)。
+                    self.lastSysLevelAt = Date()
+                    self.lastSysSignalAt = Date()
+                    os_log("MyParrot sys: 輸出裝置閒置,略過重建(%{public}@)", reason.zhTW)
+                case .rebuild:
+                    self.sysAutoRebuildCount += 1
+                    self.lastSysRebuildAt = Date()
+                    self.rebuildSystemCapture(reason: reason)
+                }
+            }
+        }
+    }
+
+    /// AUD-39 D(G4):對方軌 start 超過 `SysTrackWatchdog.rebuildTimeout` 還沒回來 ⇒ 結束「重建中」(看門狗恢復)、
+    /// 世代 +1 讓晚到的結果作廢、報錯。
+    private func scheduleSysRebuildTimeout(_ gen: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + SysTrackWatchdog.rebuildTimeout) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isRebuildingSys, gen == self.sysRebuildGeneration else { return }
+                self.isRebuildingSys = false
+                self.sysRebuildGeneration += 1
+                self.lastError = "對方軌重建逾時（\(Int(SysTrackWatchdog.rebuildTimeout)) 秒）"
+                os_log("MyParrot sys: rebuild 逾時(%ld 秒)", Int(SysTrackWatchdog.rebuildTimeout))
+            }
+        }
+    }
+
+    private func finishSystemRebuild(reason: SysRebuildReason, error: Error?, startedAt: DispatchTime) {
+        // AUD-39 M1:從開始重建到結果回 main 的總耗時(含排隊、拆、建)。
+        os_log("MyParrot sys: rebuild 完成 reason=%{public}@ ok=%ld %ldms", reason.zhTW, error == nil ? 1 : 0,
+               Int((DispatchTime.now().uptimeNanoseconds &- startedAt.uptimeNanoseconds) / 1_000_000))
+        if let error {
             lastError = "系統音訊自動重建失敗(\(reason.zhTW)):\(error)"
+            return
+        }
+        // Give the rebuilt tap a fresh grace window before it can be judged
+        // stale/silent again, so the bounded retries are spaced ~sysSilentRebuildAfter
+        // apart (a fair recovery chance) instead of firing back-to-back (BUG-24).
+        lastSysLevelAt = Date(); lastSysSignalAt = Date()
+        // BUG-24:別用「已自動重新啟動」的成功語氣蓋掉稍早那句可行動的 HFP 提示。
+        // 若這次重建是因「持續無聲」(silentSysWarned 已武裝),重建對 HFP 路由救不回
+        // 聲音,誆稱「已重啟」會變成停到錄音結束的假安心;改成不宣稱成功的合併訊息。
+        // BUG-28/B2 題 C:自動收起後的靜音觀察期內,持續無聲觸發的重建不再跳
+        // 橫幅——否則 20 秒的重建會先跳出來,60 秒的再跳門檻等於白設。
+        if let banner = SysTrackWatchdog.rebuildBanner(
+                silentWarned: silentSysWarned, reason: reason,
+                inRewarnGrace: sysWarningAutoDismissed && !silentSysWarned) {
+            warning = banner
         }
     }
 
@@ -654,9 +953,8 @@ public final class RecordingController {
     /// system default (if built-in/USB) → built-in → any built-in/USB → wired iPhone
     /// → any non-BT (wireless iPhone beats BT) → finally anything. Never hard-blocks —
     /// the user can still pick iPhone / Bluetooth manually (e.g. to test).
-    private func autoSelectInput() -> AudioInputDevice? {
+    private func autoSelectInput(defaultDevice def: AudioInputDevice?) -> AudioInputDevice? {
         func topReliable(_ d: AudioInputDevice) -> Bool { !d.isBluetooth && !d.isContinuity }
-        let def = AudioDevices.defaultInputDevice()
         if let def, topReliable(def), let m = availableInputDevices.first(where: { $0.id == def.id }) { return m }
         if let builtIn = availableInputDevices.first(where: { $0.isBuiltIn && !$0.isBluetooth }) { return builtIn }
         if let usb = availableInputDevices.first(where: topReliable) { return usb }
@@ -845,27 +1143,40 @@ public final class RecordingController {
         // While recording, the meter reflects the live recording level (youLevel),
         // so we don't spin up a second engine fighting for the same mic.
         guard !isMonitoring, state != .recording else { return }
+        monitorGeneration += 1
+        let gen = monitorGeneration
         monitor.stop()
+        monitor = MicCapture()   // AUD-38 F6:新實例,closure 在 start 前設好、之後不改寫
         monitor.gain = inputGain
         monitor.onLevel = { [weak self] v in Task { @MainActor in self?.monitorLevel = v } }
-        do {
-            try monitor.start(deviceID: selectedInputDevice?.id)
-            isMonitoring = true
-        } catch {
-            // G-1 審查發現:若上面 start() 在 tap 已裝之後才失敗,`monitor` 帶著
-            // 洩漏的 tap 進到這裡;`start()` 的 guard 只看 `isRunning`(此時仍
-            // 是 false)擋不住重入,直接對同一顆 engine 的 bus 0 再裝一次 tap
-            // 會撞 AVAudioEngine fatal exception(nullptr == Tap())。重試前先
-            // stop() 讓 G-1 修好的 tapInstalled 清乾淨,同上面第一次嘗試前的
-            // 防禦性 stop()。
-            monitor.stop()
-            // Retry on the system default device before giving up.
-            do { try monitor.start(deviceID: nil); isMonitoring = true }
-            catch { lastError = "麥克風測試失敗:\(error)" }
+        // AUD-38:非阻塞 start;isMonitoring 只在世代沒變(期間沒有 stopMicMonitor／重新 start)時才動。
+        let monitor = self.monitor
+        monitor.start(deviceID: selectedInputDevice?.id, isBluetooth: selectedInputDevice?.isBluetooth ?? false) { [weak self] error in
+            Task { @MainActor in
+                guard let self, gen == self.monitorGeneration else { return }
+                guard error != nil else { self.isMonitoring = true; return }
+                // G-1 審查發現:若 start 在 tap 已裝之後才失敗,對同一顆 engine 的 bus 0 再裝一次 tap
+                // 會撞 AVAudioEngine fatal exception(nullptr == Tap())。重試前先 stop() 讓
+                // tapInstalled 清乾淨(MicCapture.start 失敗路徑現在也會自己清,這裡留著當保險)。
+                monitor.stop()
+                // Retry on the system default device before giving up.
+                // AUD-39 D(G2):MicCapture 單次使用,stop 過的實例不能再 start ⇒ 重試用新實例。
+                let retry = MicCapture()
+                retry.gain = self.inputGain
+                retry.onLevel = { [weak self] v in Task { @MainActor in self?.monitorLevel = v } }
+                self.monitor = retry
+                retry.start(deviceID: nil, isBluetooth: false) { [weak self] retryError in
+                    Task { @MainActor in
+                        guard let self, gen == self.monitorGeneration else { return }
+                        if let retryError { self.lastError = "麥克風測試失敗:\(retryError)" } else { self.isMonitoring = true }
+                    }
+                }
+            }
         }
     }
 
     public func stopMicMonitor() {
+        monitorGeneration += 1
         monitor.stop(); isMonitoring = false; monitorLevel = 0
     }
 
@@ -896,11 +1207,13 @@ public final class RecordingController {
         lastError = nil
         micPeak = 0; sysPeak = 0; silentMicWarned = false; silentSysWarned = false
         lastMicLevelAt = Date(); micAutoRebuildCount = 0; lastMicRebuildAt = .distantPast
+        micFlowSince = nil; micLockedUID = nil; micSilenceGraceUntil = .distantPast   // AUD-38
         lastSysLevelAt = Date(); lastSysSignalAt = Date(); sysAutoRebuildCount = 0; lastSysRebuildAt = .distantPast
         lastSysRealSignalAt = Date(); sysWarningAutoDismissed = false
         micDeadAlarmed = false; sysDeadAlarmed = false; deadTrackAlarms = []
         micSpeech.reset(); sysSpeech.reset(); silenceRule.reset(); speechSinceTick = false; silenceStopSuggestedAt = nil
-        mic.gain = inputGain
+        // AUD-38 F1/F6:每場錄音用新實例(上一場的在 stop() 已停),onLevel／onBuffer 在 start 前設好、之後不改寫。
+        mic = makeMic(like: nil)
 
         // Capture plain references/values so the audio-thread callbacks never touch
         // @MainActor state (doing so crashes under Swift 6 isolation checks).
@@ -932,9 +1245,15 @@ public final class RecordingController {
             guard let self else { return }
             self.youLevel = v; self.micPeak = max(self.micPeak, v)
             if self.micSpeech.observe(level: v, at: self.elapsed) { self.speechSinceTick = true }   // CAL-09
-            // Buffers are flowing → the tap is alive. Mark liveness and clear the
-            // consecutive-failure counter so the cap means "failed rebuilds in a row".
-            self.lastMicLevelAt = Date(); self.micAutoRebuildCount = 0 } }
+            // Buffers are flowing → the tap is alive. Mark liveness. AUD-38:連續重建計數只在 buffer
+            // **連續**流動 ≥10 秒才歸零(不再每個 buffer 就歸零,否則「建起來流 1 秒又死」永遠碰不到上限);
+            // 跟上一個 buffer 隔超過「判死」門檻＝流動中斷過,連續流動從這個 buffer 重新起算。
+            let now = Date()
+            if self.micFlowSince == nil || now.timeIntervalSince(self.lastMicLevelAt) > MicWatchdogPolicy.deadAfter {
+                self.micFlowSince = now
+            }
+            self.lastMicLevelAt = now
+            if MicWatchdogPolicy.shouldResetCount(flowSince: self.micFlowSince, now: now) { self.micAutoRebuildCount = 0 } } }
         // Gate the live transcriber on the recorder's pause flag too, so pausing
         // also stops transcribing (otherwise paused speech is still transcribed
         // and the transcript timeline drifts from the saved audio).
@@ -953,8 +1272,54 @@ public final class RecordingController {
         }
         do {
             try recorder.start(url: audioURL)   // #949:寫 inprogress,停止時才發布到頂層 `url`
-            try mic.start(deviceID: selectedInputDevice?.id)
-            try system.start()   // may fail without audio-capture permission — surfaced below
+            // AUD-38:麥克風非阻塞啟動,失敗在 completion 回報(不擋 system.start)。沒選裝置時解析成系統預設
+            // 那一顆,預設輸入是藍牙也能起 HFP 保持器。上面 stopMicMonitor() 也是非阻塞:monitor 已立刻靜音,
+            // 與錄音引擎可能短暫並存(macOS 允許同一顆麥多個客戶端)。
+            // AUD-38 F1:開錄的 start 也算「切換中」——藍牙裝置要等保持器＋建引擎好幾秒,期間看門狗不計時、
+            // 無聲警告不判,否則 3 秒就被當成死引擎重建。
+            let dev: AudioInputDevice?
+            if let sel = selectedInputDevice {
+                dev = sel
+            } else {
+                // AUD-39:只有沒選裝置時才在 main 查一次系統預設輸入,記耗時。
+                let t0 = Date()
+                dev = AudioDevices.defaultInputDevice()
+                os_log("MyParrot mic: 開錄未選裝置,查系統預設輸入 %ldms", Int(Date().timeIntervalSince(t0) * 1000))
+            }
+            isSwitchingMic = true
+            micSwapGeneration += 1
+            let gen = micSwapGeneration
+            scheduleSwitchTimeout(gen)
+            mic.start(deviceID: dev?.id, isBluetooth: dev?.isBluetooth ?? false) { [weak self] error in
+                Task { @MainActor in
+                    // 不用 stop 這個引擎:它就是 self.mic,停錄的 stop() 會處理。
+                    guard let self, gen == self.micSwapGeneration,
+                          self.state == .recording || self.state == .paused else { return }
+                    if let error {
+                        self.lastError = "麥克風啟動失敗：\(error)"
+                        self.finishMicSwitch(succeeded: false)
+                    } else {
+                        self.finishMicSwitch(succeeded: true)
+                    }
+                }
+            }
+            // AUD-39:對方軌 tap 非阻塞啟動(may fail without audio-capture permission — 失敗在 completion 回報,不擋錄音)。
+            // G4:開錄這次 start 也算「對方軌重建中」——看門狗不觸發、有 20 秒逾時。
+            isRebuildingSys = true
+            sysRebuildGeneration += 1
+            let sysGen = sysRebuildGeneration
+            scheduleSysRebuildTimeout(sysGen)
+            system.start { [weak self] error in
+                Task { @MainActor in
+                    guard let self, sysGen == self.sysRebuildGeneration else { return }
+                    self.isRebuildingSys = false
+                    if let error {
+                        self.lastError = "系統音訊擷取啟動失敗：\(error)"
+                    } else {
+                        self.lastSysLevelAt = Date(); self.lastSysSignalAt = Date()   // 同 finishSystemRebuild
+                    }
+                }
+            }
         } catch {
             lastError = "\(error)"
         }
@@ -995,7 +1360,11 @@ public final class RecordingController {
         if state == .recording { accumulated += Date().timeIntervalSince(startDate) }
         stopTicker()
         endRecordingActivity()     // BUG-30
-        system.stop()
+        sysRebuildGeneration += 1; isRebuildingSys = false   // AUD-39:在飛的對方軌重建結果作廢
+        system.stop()              // AUD-39:非阻塞,當下靜音
+        // AUD-38:切換中途停錄 ⇒ 遞增世代,晚到的 start completion 會把它的新引擎 stop 掉、不得換掉 `mic`。
+        micSwapGeneration += 1; isSwitchingMic = false; micFlowSince = nil
+        inflightMics.forEach { $0.stop() }; inflightMics.removeAll()   // AUD-38 F5
         mic.stop()
         live.stop()
         recorder.stop()
@@ -1343,10 +1712,12 @@ public final class RecordingController {
                 // went stale) → the engine/route died and AVAudioEngine didn't recover.
                 // Auto-rebuild on the current device (capped consecutive attempts, each on
                 // a cooldown) so 你軌 comes back without the user manually switching mics.
+                // AUD-38:切換中不計時、被震盪鎖住不重建(門檻見 MicWatchdogPolicy)。
                 let now = Date()
-                if now.timeIntervalSince(self.lastMicLevelAt) > Self.micDeadAfter,
-                   self.micAutoRebuildCount < Self.micMaxConsecutiveRebuilds,
-                   now.timeIntervalSince(self.lastMicRebuildAt) > Self.micRebuildCooldown {
+                if MicWatchdogPolicy.shouldRebuild(sinceLastBuffer: now.timeIntervalSince(self.lastMicLevelAt),
+                                                   count: self.micAutoRebuildCount,
+                                                   sinceLastRebuild: now.timeIntervalSince(self.lastMicRebuildAt),
+                                                   switching: self.isSwitchingMic, locked: self.micLockedUID != nil) {
                     self.micAutoRebuildCount += 1
                     self.lastMicRebuildAt = now
                     self.rebuildCurrentMic(reason: .signalLost)
@@ -1364,15 +1735,18 @@ public final class RecordingController {
                         rebuildCount: self.sysAutoRebuildCount,
                         sinceLastRebuild: now.timeIntervalSince(self.lastSysRebuildAt),
                         deadAfter: Self.sysDeadAfter, silentAfter: Self.sysSilentRebuildAfter,
-                        cooldown: Self.sysRebuildCooldown, maxRebuilds: Self.sysMaxConsecutiveRebuilds) {
-                    self.sysAutoRebuildCount += 1
-                    self.lastSysRebuildAt = now
-                    self.rebuildSystemCapture(reason: sysBufferStaleFor > Self.sysDeadAfter
+                        cooldown: Self.sysRebuildCooldown, maxRebuilds: Self.sysMaxConsecutiveRebuilds,
+                        rebuilding: self.isRebuildingSys) {
+                    // AUD-40(BUG-36)＋題 P1:不論 buffer 停流還是持續無聲,先查輸出裝置在不在跑——
+                    // 閒置(沒聲音在播)時 tap 本來就不送 buffer／只有零值,不算 tap 死。
+                    self.checkOutputThenRebuild(reason: sysBufferStaleFor > Self.sysDeadAfter
                         ? .signalLost : .persistentSilence)
                 }
                 // After 8s, if your mic still hasn't picked up anything, warn — your
                 // voice channel is dead (usually the wrong input device is selected).
-                if self.elapsed > 8, self.micPeak < Self.silenceThreshold, !self.silentMicWarned {
+                // AUD-38:切換中不判;切換成功後再給 8 秒緩衝(micSilenceGraceUntil)。
+                if self.elapsed > 8, self.micPeak < Self.silenceThreshold, !self.silentMicWarned,
+                   !self.isSwitchingMic, now >= self.micSilenceGraceUntil {
                     self.silentMicWarned = true
                     self.warning = self.selectedInputDevice?.isBluetooth == true
                         ? .micSilentBluetooth : .micSilent
@@ -1550,16 +1924,18 @@ public final class RecordingController {
                 // which may re-point `selectedInputDevice` to a present device when the old
                 // one's id is gone — that would hide the vanish from the check below.
                 let recordingDevice = self.selectedInputDevice
-                self.refreshDevices()
-                guard self.state == .recording else { return }
-                // If the device we were recording from just vanished, recover immediately
-                // onto a present device (don't wait for the 3s liveness watchdog) —
-                // rebuildCurrentMic resolves the now-updated selection/default (BUG-18 / AUD-28).
-                if let d = recordingDevice,
-                   !self.availableInputDevices.contains(where: { $0.uid == d.uid }) {
-                    self.rebuildCurrentMic(reason: .deviceRemoved)
-                } else {
-                    self.warning = .deviceChanged
+                // AUD-39:清單在背景刷新;「錄音中的裝置消失了沒」要等新清單套用後(main)再判。
+                self.refreshDevices { [weak self] in
+                    guard let self, self.state == .recording else { return }
+                    // If the device we were recording from just vanished, recover immediately
+                    // onto a present device (don't wait for the 3s liveness watchdog) —
+                    // rebuildCurrentMic resolves the now-updated selection/default (BUG-18 / AUD-28).
+                    if let d = recordingDevice,
+                       !self.availableInputDevices.contains(where: { $0.uid == d.uid }) {
+                        self.rebuildCurrentMic(reason: .deviceRemoved, avoidDeviceID: d.id)   // AUD-39:等預設輸入換掉它
+                    } else {
+                        self.warning = .deviceChanged
+                    }
                 }
             }
         }
@@ -1579,7 +1955,8 @@ public final class RecordingController {
                 // aggregate。跟 watchdog 共用同一組計數/冷卻,總重建次數才是
                 // 真正有上限。
                 let now = Date()
-                guard now.timeIntervalSince(self.lastSysRebuildAt) > Self.sysRebuildCooldown,
+                guard !self.isRebuildingSys,   // AUD-39:重建中不再疊一次
+                      now.timeIntervalSince(self.lastSysRebuildAt) > Self.sysRebuildCooldown,
                       self.sysAutoRebuildCount < Self.sysMaxConsecutiveRebuilds else { return }
                 self.sysAutoRebuildCount += 1
                 self.lastSysRebuildAt = now
@@ -1624,11 +2001,22 @@ enum SysTrackWatchdog {
 
     /// 是否該嘗試自動重建對方軌 tap:buffer 停止流動(裝置移除)**或**持續真靜音
     /// 太久(死/HFP tap 送全零),且未達連續重建上限、距上次重建已過冷卻。
+    /// AUD-39 D(G4):對方軌 start／重建最多等多久(秒)。
+    static let rebuildTimeout: TimeInterval = 20
+
+    /// AUD-40(BUG-36):buffer 停流時該怎麼辦。
+    enum StaleAction: Equatable { case skipIdle, rebuild }
+    /// 輸出裝置沒在跑(false)＝沒聲音在播、tap 本來就不送 buffer ⇒ 略過;在跑(true)或讀不到(nil)⇒ 重建。
+    static func staleAction(outputRunning: Bool?) -> StaleAction {
+        outputRunning == false ? .skipIdle : .rebuild
+    }
+
     static func shouldRebuild(bufferStaleFor: TimeInterval, silentFor: TimeInterval,
                              rebuildCount: Int, sinceLastRebuild: TimeInterval,
                              deadAfter: TimeInterval, silentAfter: TimeInterval,
-                             cooldown: TimeInterval, maxRebuilds: Int) -> Bool {
-        (bufferStaleFor > deadAfter || silentFor >= silentAfter)
+                             cooldown: TimeInterval, maxRebuilds: Int, rebuilding: Bool) -> Bool {
+        guard !rebuilding else { return false }   // AUD-39:重建中(tap 正在佇列上拆建)不再觸發
+        return (bufferStaleFor > deadAfter || silentFor >= silentAfter)
             && rebuildCount < maxRebuilds
             && sinceLastRebuild > cooldown
     }

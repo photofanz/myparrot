@@ -88,6 +88,7 @@ final class Localizer {
         "增益": [.en: "Gain", .ja: "ゲイン", .ko: "게인", .zhCN: "增益"],
         "輸入增益": [.en: "Input gain", .ja: "入力ゲイン", .ko: "입력 게인", .zhCN: "输入增益"],
         "麥克風與輸入增益": [.en: "Microphone & input gain", .ja: "マイクと入力ゲイン", .ko: "마이크 및 입력 게인", .zhCN: "麦克风与输入增益"],
+        "切換中…": [.en: "Switching…", .ja: "切り替え中…", .ko: "전환 중…", .zhCN: "切换中…"],   // AUD-38 麥克風藥丸
         "沒有可用的麥克風": [.en: "No microphone available", .ja: "使用できるマイクがありません", .ko: "사용 가능한 마이크가 없습니다", .zhCN: "没有可用的麦克风"],
         "呼…呼…": [.en: "Phew…", .ja: "はぁ…はぁ…", .ko: "헉…헉…", .zhCN: "呼…呼…"],
         "好耶": [.en: "Yay!", .ja: "やったー", .ko: "좋았어!", .zhCN: "好耶"],
@@ -391,6 +392,12 @@ final class Localizer {
             .ja: "⚠️ Bluetooth マイクを選んでいます。会議アプリに占有されたり狭帯域になったりして、全編録れないことがあります — 設定で内蔵か USB マイクに変更してください",
             .ko: "⚠️ 블루투스 마이크를 선택했습니다. 회의 앱이 점유하거나 협대역으로 떨어져 전체가 녹음되지 않을 수 있습니다 — 설정에서 내장 또는 USB 마이크로 바꾸세요",
             .zhCN: "⚠️ 你选的是蓝牙麦克风,整场可能收不到声音(常被会议 app 占住或掉窄频)— 请到设置改用内置或 USB 麦克风"],
+        // AUD-38(#2529):藍牙麥震盪鎖橫幅。
+        "⚠️ 藍牙麥克風「%@」在此系統無法穩定擷取（HFP 格式反覆切換），你軌（右）已停止自動重建 — 請切回內建或有線麥克風": [
+            .en: "⚠️ The Bluetooth mic \u{201C}%@\u{201D} can't capture reliably on this Mac (its HFP format keeps switching) — auto-reconnect for your track (right) has stopped. Switch back to the built-in or a wired mic",
+            .ja: "⚠️ Bluetooth マイク「%@」はこの Mac では安定して録音できません(HFP のフォーマットが切り替わり続けています)。あなたのトラック(右)の自動再接続を停止しました — 内蔵か有線マイクに戻してください",
+            .ko: "⚠️ 블루투스 마이크 \u{201C}%@\u{201D}는 이 Mac에서 안정적으로 녹음할 수 없습니다(HFP 형식이 계속 바뀜). 내 트랙(오른쪽)의 자동 재연결을 중단했습니다 — 내장 또는 유선 마이크로 바꾸세요",
+            .zhCN: "⚠️ 蓝牙麦克风「%@」在此系统无法稳定采集（HFP 格式反复切换），你轨（右）已停止自动重建 — 请切回内置或有线麦克风"],
         "你的麥克風似乎沒收到聲音 — 請到設定確認「你的麥克風」選對裝置": [
             .en: "Your mic doesn't seem to pick up sound — check \u{201C}Your mic\u{201D} in Settings",
             .ja: "マイクが音を拾っていないようです — 設定の「あなたのマイク」で正しいデバイスか確認してください",
