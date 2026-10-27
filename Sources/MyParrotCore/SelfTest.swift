@@ -42,9 +42,21 @@ public enum SelfTest {
             warningAutoDismissRules(),
             quitTranscriptionGuard(),
             correctionRules(),
+            correctionListHeight(),   // UI-59
+            correctionFocus(),        // UI-60
             srtRoundTrip(),
             correctionPromptAndArgs(),
             correctionParseOutput(),
+            // #2418 Codex CLI 後端(案例在 SelfTest+Codex.swift)
+            codexRegistry(),
+            codexArguments(),
+            codexParseOutput(),
+            // #2612 逐字稿翻譯(案例在 SelfTest+Translation.swift)
+            translationRegistry(),
+            translationPlan(),
+            translationPromptAndParse(),
+            translationSRT(),
+            tokenLedger(),   // #2623 TOK-01
             tapExcludesSelf(),
             debugCommandParsing(),
             caseUpdateVersionCompare(),
@@ -1073,6 +1085,42 @@ public enum SelfTest {
     }
 
     /// CORR-09:CLI 輸出解析——正常/未登入/非 JSON/缺欄位,訊息不含原始輸出。
+    /// UI-59(BUG-38):建議清單高度政策純函式。
+    static func correctionListHeight() -> Result {
+        var fails: [String] = []
+        let H = CorrectionListLayout.self
+        if H.height(content: 0) != 1 { fails.append("量到之前應給 1pt,得 \(H.height(content: 0))") }
+        if H.height(content: 200) != 200 { fails.append("少於上限應貼內容,得 \(H.height(content: 200))") }
+        if H.height(content: 9000) != 360 { fails.append("超過上限應封 360,得 \(H.height(content: 9000))") }
+        if H.height(content: 500, cap: 100) != 100 { fails.append("cap 可注入") }
+        if H.maxHeight != 360 { fails.append("上限應 360") }
+        return Result(name: "UI-59 校正建議清單高度", passed: fails.isEmpty, detail: fails.isEmpty ? "0→1、200→200、9000→360、cap 注入" : fails.joined(separator: ";"))
+    }
+
+    /// UI-60:建議列→逐字稿段的純決策。
+    static func correctionFocus() -> Result {
+        var fails: [String] = []
+        let F = CorrectionFocus.self
+        if F.lineIndex(segment: 0, count: 3) != 0 || F.lineIndex(segment: 2, count: 3) != 2 { fails.append("合法段號應回自己") }
+        if F.lineIndex(segment: 3, count: 3) != nil || F.lineIndex(segment: -1, count: 3) != nil || F.lineIndex(segment: 0, count: 0) != nil { fails.append("越界應回 nil") }
+        let t = "我們今天要討論竹子稿的格式,竹子稿很重要"
+        if let r = F.highlightRange(original: "竹子稿", in: t) {
+            let off = t.distance(from: t.startIndex, to: r.lowerBound)
+            if String(t[r]) != "竹子稿" || off != 7 { fails.append("應取第一個命中(偏移 7),得 \(off)") }
+        } else { fails.append("命中應回範圍") }
+        if F.highlightRange(original: "不在", in: t) != nil { fails.append("沒命中應 nil") }
+        if F.highlightRange(original: " 竹子稿 ", in: t) == nil { fails.append("前後空白應 trim") }
+        if F.highlightRange(original: "", in: t) != nil { fails.append("空字串應 nil") }
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let lines = (0..<5).map { TranscriptLine(isYou: false, time: base.addingTimeInterval(Double($0) * 100), text: "l\($0)", isFinal: true) }
+        let vis = TranscriptWindow.visible(lines, full: false)   // 3 分鐘視窗:只剩最後 2 行(300/400 s)
+        if !F.needsFullTranscript(lineID: lines[0].id, visible: vis) { fails.append("早段不在視窗應需切完整") }
+        if F.needsFullTranscript(lineID: lines[4].id, visible: vis) { fails.append("末段在視窗不需切") }
+        if F.needsFullTranscript(lineID: lines[0].id, visible: TranscriptWindow.visible(lines, full: true)) { fails.append("完整模式下不需切") }
+        return Result(name: "UI-60 建議列→逐字稿段純決策", passed: fails.isEmpty,
+                      detail: fails.isEmpty ? "lineIndex 越界 nil、highlightRange 第一個命中/trim/空/沒命中、需切完整 3 案" : fails.joined(separator: ";"))
+    }
+
     static func correctionParseOutput() -> Result {
         var fails: [String] = []
         let good = """

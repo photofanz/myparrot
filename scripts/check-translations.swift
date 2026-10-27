@@ -101,6 +101,7 @@ let markedCoreFiles = [
     "Sources/MyParrotCore/Transcription/WhisperModelStore.swift",
     "Sources/MyParrotCore/Correction/CorrectionProvider.swift",
     "Sources/MyParrotCore/Models/ModelBackendRegistry.swift",   // #2438 M6:後端顯示名(設定頁「模型」區段 L(b.label))
+    "Sources/MyParrotCore/Models/TranslationProvider.swift",    // #2612 TRL:目標語言標籤(設定頁 picker／標題列 L(t.label))
 ]
 
 /// 一行裡所有的字串字面值(照引號狀態與跳脫處理)。

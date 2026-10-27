@@ -10,7 +10,7 @@ extension SelfTest {
         let with = R.assemble(platformSupportsAFM: true), without = R.assemble(platformSupportsAFM: false)
         if !ids(with).contains("appleFM") { fails.append("支援平台應列 appleFM") }
         if ids(without).contains("appleFM") { fails.append("不支援平台不應列 appleFM") }
-        if ids(with).firstIndex(of: "appleFM") != 2 { fails.append("appleFM 應排在 claudeCLI 之後,得 \(ids(with))") }
+        if ids(with).firstIndex(of: "appleFM") != 3 { fails.append("appleFM 應排在 claudeCLI、codexCLI 之後,得 \(ids(with))") }
         if R.appleFM.capabilities != [.correction, .minutes] || !R.appleFM.isLocal || R.appleFM.debugOnly { fails.append("appleFM 宣告不對") }
         if R.appleFM.id != CorrectionBackend.appleFM.rawValue { fails.append("appleFM id 應等於 CorrectionBackend.appleFM.rawValue") }
         if R.needsPrivacyConfirmation("appleFM", defaults: UserDefaults(suiteName: "MyParrotSelfTest.afm")!) { fails.append("本機後端不該跳隱私框") }

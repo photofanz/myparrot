@@ -26,6 +26,8 @@ public struct CorrectionResult: Sendable {
 /// `strings` 查不到它;release 讀到偏好裡殘留的 localFake ⇒ 解析成 off)。
 public enum CorrectionBackend: String, CaseIterable, Sendable {
     case off, claudeCLI
+    /// #2418 CDX:本機 `codex` CLI(ChatGPT 訂閱)。
+    case codexCLI
     /// #2438 Phase 3a:Apple Foundation Models(macOS 26+,資料不出機)。
     case appleFM
     #if DEBUG
@@ -40,6 +42,7 @@ public enum CorrectionBackend: String, CaseIterable, Sendable {
         // l10n-keys:begin
         case .off:       return "關閉"
         case .claudeCLI: return "Claude CLI(本機)"
+        case .codexCLI:  return "Codex CLI(本機)"
         case .appleFM:   return "Apple 本機模型"
         #if DEBUG
         case .localFake: return "本地假供應商(測試用)"
@@ -53,6 +56,9 @@ public enum CorrectionBackend: String, CaseIterable, Sendable {
 public enum CorrectionError: Error, Sendable, Equatable {
     case cliNotFound
     case notLoggedIn
+    /// #2418 CDX-03:`codex` 找不到／未登入(訊息要指向 Codex,不能借 Claude 的字)。
+    case codexNotFound
+    case codexNotLoggedIn
     case timeout
     case badOutput(String)      // 一句摘要
     case failed(Int32, String)  // exit code + 一句摘要
@@ -63,6 +69,8 @@ public enum CorrectionError: Error, Sendable, Equatable {
         switch self {
         case .cliNotFound: return "找不到 claude 指令,請先安裝 Claude Code"
         case .notLoggedIn: return "Claude Code 尚未登入,請在終端機執行 claude /login"
+        case .codexNotFound: return "找不到 codex 指令,請先安裝 Codex CLI"
+        case .codexNotLoggedIn: return "Codex CLI 尚未登入,請在終端機執行 codex login"
         case .timeout: return "校正逾時,請稍後再試"
         case .badOutput(let s): return "校正回應無法解析:\(s)"
         case .failed(let code, let s): return "校正失敗(exit \(code)):\(s)"

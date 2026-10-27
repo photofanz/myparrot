@@ -225,7 +225,11 @@ struct WorkspaceView: View {
 
     @ViewBuilder private func paneControls(_ kind: PaneKind) -> some View {
         switch kind {
-        case .transcript: TranscriptRangeControl(uiState: uiState)
+        case .transcript:
+            HStack(spacing: MP.spS) {
+                TranslationControl(controller: controller, uiState: uiState)   // #2612 TRL-07:翻譯後端 off 時不出現
+                TranscriptRangeControl(uiState: uiState)
+            }
         case .notes, .minutes: EmptyView()
         }
     }

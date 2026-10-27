@@ -4,7 +4,7 @@ Four layers, ordered by how automatable they are:
 
 | Layer | What | How to run |
 | --- | --- | --- |
-| 1. Self-test | ~95 cases covering pure logic (0.5.1): file naming, sample queue (FIFO + ramped padding), resampling, stereo split, drain policy (no mid-speech zero gaps), gain/soft-limit, CAF→m4a export, SRT format, AEC (delay-align + NLMS, no-echo gate), device enumeration | `swift run MyParrotSelfTest` — Command Line Tools only, no Xcode needed |
+| 1. Self-test | ~115 cases covering pure logic (0.5.2): file naming, sample queue (FIFO + ramped padding), resampling, stereo split, drain policy (no mid-speech zero gaps), gain/soft-limit, CAF→m4a export, SRT format, AEC (delay-align + NLMS, no-echo gate), device enumeration | `swift run MyParrotSelfTest` — Command Line Tools only, no Xcode needed |
 | 2. Swift Testing | The same cases via `@Test` wrappers (zero duplicated logic), plus opt-in real-path suites (`MP_AFM_REAL=1`, `MP_WHISPER_REAL_FILE=<m4a>`) | `swift test` — needs full Xcode toolchain |
 | 3. Measured audio | Objective checks on real recordings with `ffmpeg astats` (per-channel RMS: is each track alive?), `silencedetect` at −90 dB (micro zero-gap fingerprint = padding clicks) | see commands below |
 | 4. Manual | Anything needing real devices, TCC dialogs, GUI: hot-swap while recording, permission flows, Bluetooth behavior | a human and a Mac |

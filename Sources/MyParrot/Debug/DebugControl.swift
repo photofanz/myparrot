@@ -117,7 +117,7 @@ enum DebugControl {
                       to: out)
             }
         case "correction":
-            guard params.count >= 2 else { write(["ok": false, "error": "usage: correction accept|ignore|revert <id>"], to: out); return }
+            guard params.count >= 2 else { write(["ok": false, "error": "usage: correction accept|ignore|revert|focus <id>"], to: out); return }
             guard c.correctionSuggestions.contains(where: { $0.id == params[1] }) else {
                 write(["ok": false, "error": "no suggestion with id \(params[1])", "ids": c.correctionSuggestions.map(\.id)], to: out); return
             }
@@ -125,15 +125,21 @@ enum DebugControl {
             case "accept": c.acceptCorrection(params[1])
             case "ignore": c.ignoreCorrection(params[1])
             case "revert": c.revertCorrection(params[1])
+            case "focus": ui.focusedSuggestionID = params[1]   // UI-60:走點列同一條路(AppUIState → TranscriptPane.onChange)
             default: write(["ok": false, "error": "unknown correction action"], to: out); return
             }
             write(["ok": true, "suggestions": c.correctionSuggestions.map { ["id": $0.id, "state": "\($0.state)"] }], to: out)
+        case "transcript":
+            // UI-60 驗證用:transcript scroll bottom|<index>(走逐字稿 ScrollView 的 reader,對照「跟到最新」路徑)
+            guard params.count >= 2, params[0] == "scroll" else { write(["ok": false, "error": "usage: transcript scroll bottom|<index>"], to: out); return }
+            ui.transcriptScrollRequest = "\(params[1])#\(Date().timeIntervalSince1970)"
+            write(["ok": true, "request": params[1]], to: out)
         case "corrections":
             if params.first == "ignore-all" { c.ignoreAllCorrections() } else if params.first == "clear" { c.clearCorrections() }
             else { write(["ok": false, "error": "usage: corrections ignore-all|clear"], to: out); return }
             write(["ok": true], to: out)
         case "backend":
-            guard let b = CorrectionBackend(rawValue: params.first ?? "") else { write(["ok": false, "error": "usage: backend off|claudeCLI|localFake"], to: out); return }
+            guard let b = CorrectionBackend(rawValue: params.first ?? "") else { write(["ok": false, "error": "usage: backend off|claudeCLI|codexCLI|appleFM|localFake"], to: out); return }
             c.correctionBackend = b; write(["ok": true, "backend": b.rawValue], to: out)
         case "model":
             // #2438 M6(MDL-05):model list | get <cap> | set|use <cap> <id> | request <cap> <id> | privacy accept|cancel
@@ -489,6 +495,48 @@ enum DebugControl {
             default:
                 write(["ok": false, "error": "minutes update|cadence <n>|auto on|off|status"], to: out)
             }
+        case "tokens":
+            // #2623 TOK-06:tokens status(目前那場 totals) | inject <feature> <backend> <in> <out>(DEBUG 驗證用)
+            guard let n = ui.notes else { write(["ok": false, "error": "no notes session"], to: out); return }
+            switch params.first {
+            case "status": write(tokensJSON(n), to: out)
+            case "inject":
+                guard params.count >= 5, let s = n.stem, let cap = ModelCapability(rawValue: params[1]), let i = Int(params[3]), let o = Int(params[4]) else {
+                    write(["ok": false, "error": "usage: tokens inject correction|minutes|translation <backend> <in> <out>(要先選一場)"], to: out); return
+                }
+                let ok = TokenLedger.append(stem: s, TokenEntry(feature: cap, backend: params[2], inputTokens: i, outputTokens: o, durationMs: 0, units: 0))
+                write(["ok": ok, "file": TokenLedger.url(stem: s).path], to: out)
+            default: write(["ok": false, "error": "tokens status|inject <feature> <backend> <in> <out>"], to: out)
+            }
+        case "translation":
+            // #2612 TRL-13:translation status|update|whole|retry|target <x>|cadence <sec>|show on|off|availability force <x>|clear
+            guard let n = ui.notes else { write(["ok": false, "error": "no notes session"], to: out); return }
+            let t = n.translation
+            switch params.first {
+            case "status": write(translationJSON(t, session: n, c), to: out)
+            case "update": t.translateNow(); write(["ok": true], to: out)
+            case "whole": n.translateWholeNow(controller: c); write(["ok": true, "pending": t.pending.count], to: out)
+            case "retry": t.retryAllFailed(); write(["ok": true], to: out)
+            case "live":
+                // 驗證用:把畫面上這份稿當「錄音中」來源起／停自動翻譯 loop(TRL-04 的節奏與排隊路徑,不必真錄音)。
+                if params.count >= 2, params[1] == "on" { t.startAuto(transcript: { c.liveTranscript }, language: { c.language }) } else { t.endAuto() }
+                write(["ok": true, "live": params.count >= 2 && params[1] == "on"], to: out)
+            case "target":
+                guard params.count >= 2, let tg = TranslationTarget(rawValue: params[1]) else { write(["ok": false, "error": "usage: translation target zh-Hant|en|ja|ko|zh-Hans"], to: out); return }
+                t.target = tg; write(["ok": true, "target": t.target.rawValue], to: out)
+            case "cadence":
+                guard params.count >= 2, let s = Int(params[1]), TranslationPlan.cadenceOptions.contains(s) else { write(["ok": false, "error": "usage: translation cadence 30|60|120|300"], to: out); return }
+                t.cadenceSeconds = s; write(["ok": true, "cadence": t.cadenceSeconds], to: out)
+            case "show":
+                t.showTranslations = params.count >= 2 && params[1] == "on"; write(["ok": true, "show": t.showTranslations], to: out)
+            case "availability":
+                if params.count >= 3, params[1] == "force", let a = TranslationController.Availability(rawValue: params[2]) { t.forcedAvailability = a }
+                else if params.count >= 2, params[1] == "clear" { t.forcedAvailability = nil }
+                else { write(["ok": false, "error": "usage: translation availability force installed|supported|unsupported|clear"], to: out); return }
+                write(["ok": true, "availability": t.effectiveAvailability.rawValue, "forced": t.forcedAvailability?.rawValue ?? ""], to: out)
+            default:
+                write(["ok": false, "error": "translation status|update|whole|retry|live on|off|target <x>|cadence <sec>|show on|off|availability force <x>|clear"], to: out)
+            }
         case "quit":
             write(["ok": true], to: out)
             // 走正常退出流程(含錄音中/轉稿中的確認框)。🔴 不能從主 dispatch queue 的 block
@@ -526,6 +574,11 @@ enum DebugControl {
             "model": modelSelections(),
             "modelPending": ui.modelFlow.pending.map { ["capability": $0.capability.rawValue, "backend": $0.backendID] } ?? NSNull(),
             "minutesEnabled": ui.minutesEnabled,
+            "focusedSuggestion": ui.focusedSuggestionID ?? NSNull(),   // UI-60
+            "fullTranscript": ui.fullTranscript,
+            "transcriptScroll": ui.transcriptScroll,
+            "translation": ui.notes.map { translationJSON($0.translation, session: $0, c) } ?? [:],   // #2612
+            "tokens": ui.notes.map { tokensJSON($0) } ?? [:],   // #2623
             "isCheckingTranscript": c.isCheckingTranscript,
             "suggestions": c.correctionSuggestions.map { ["id": $0.id, "state": "\($0.state)"] },
             "holdingSleepAssertion": c.isHoldingSleepAssertion,
@@ -803,6 +856,30 @@ enum DebugControl {
     }
 
     /// AFM 狀態 → JSON。
+    /// #2623 TOK-06:這場帳本的 totals JSON。
+    @MainActor private static func tokensJSON(_ n: NotesSession) -> [String: Any] {
+        let t = TokenLedger.totals(n.tokens)
+        func sum(_ s: TokenSum) -> [String: Any] { ["in": s.inputTokens, "out": s.outputTokens, "calls": s.calls, "ms": s.durationMs, "units": s.units, "estimated": s.estimated] }
+        return ["ok": true, "stem": n.stem?.lastPathComponent ?? "", "entries": n.tokens.count, "all": sum(t.all),
+                "byFeature": t.byFeature.mapValues(sum),
+                "byFeatureBackend": t.byFeatureBackend.mapValues { $0.mapValues(sum) },
+                "summaryLine": n.tokenSummaryLine ?? "",
+                "file": n.stem.map { TokenLedger.url(stem: $0).path } ?? ""]
+    }
+
+    /// #2612 TRL-13:翻譯狀態 JSON(`translation status` 與 `state.translation` 共用)。
+    @MainActor private static func translationJSON(_ t: TranslationController, session n: NotesSession, _ c: RecordingController) -> [String: Any] {
+        ["ok": true, "backend": t.backendID, "enabled": t.isEnabled, "available": t.isAvailable,
+         "availability": t.effectiveAvailability.rawValue, "forced": t.forcedAvailability?.rawValue ?? "",
+         "target": t.target.rawValue, "cadence": t.cadenceSeconds, "show": t.showTranslations,
+         "pending": t.pending.count, "inFlight": t.inFlight.count, "translated": t.translations.count, "failed": t.failed.count,
+         "translating": t.isTranslating, "stale": t.stale, "autoPaused": t.autoPaused, "failures": t.consecutiveFailures,
+         "batches": t.batchCount, "inputTokens": t.inputTokens, "outputTokens": t.outputTokens,
+         "whole": t.wholeProgress.map { ["done": $0.done, "total": $0.total] } ?? [:],
+         "file": t.fileURL?.path ?? "", "fileExists": t.fileURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false,
+         "unavailableReason": t.unavailableReason ?? "", "error": t.lastError ?? ""]
+    }
+
     private static func afmJSON() -> [String: Any] {
         let afm = AppleFMAvailability.shared
         let status: String, reason: String?

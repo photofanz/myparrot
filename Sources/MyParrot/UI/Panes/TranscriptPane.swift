@@ -13,6 +13,8 @@ struct TranscriptPane: View {
     /// UI-51:使用者往上捲(距底 > 40pt)就暫停自動跟隨,出「↓ 跟到最新」膠囊;按膠囊或捲回底部恢復。
     @State private var followPaused = false
     @State private var lastContentHeight: CGFloat = 0
+    /// UI-60:選中建議對應的逐字稿行(泡泡加粗藍框);跟著 `uiState.focusedSuggestionID` 走,清單清空就消。
+    @State private var highlightedLineID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: MP.spS) {
@@ -30,7 +32,27 @@ struct TranscriptPane: View {
                 }
             }
             if !controller.correctionSuggestions.isEmpty {
-                CorrectionSuggestionList(controller: controller)
+                CorrectionSuggestionList(controller: controller, selectedID: uiState.focusedSuggestionID,
+                                         onSelect: { uiState.focusedSuggestionID = $0.id })
+            }
+            // #2612 TRL-09:重轉後譯文失效,提示重翻。
+            if let tr = uiState.notes?.translation, tr.isEnabled, tr.stale {
+                HStack(spacing: MP.spS) {
+                    Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+                    Text(L("逐字稿已更新,譯文需重翻")).font(MPFont.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("翻譯整份")) { uiState.notes?.translateWholeNow(controller: controller) }.controlSize(.small).disabled(!tr.isAvailable)
+                }
+                .mpBanner(color: .orange)
+            }
+            if let tr = uiState.notes?.translation, let err = tr.lastError, tr.isEnabled {
+                HStack(spacing: MP.spS) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(err).font(MPFont.caption).foregroundStyle(.orange).lineLimit(2)
+                    Spacer()
+                    Button { tr.lastError = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                }
+                .mpBanner(color: .orange)
             }
             if let err = controller.lastError {
                 HStack(spacing: MP.spS) {
@@ -47,7 +69,10 @@ struct TranscriptPane: View {
                         // UI-33(Eric 2026-08-24):「轉逐字稿中/轉檔中」狀態改顯示在
                         // 錄音列表對應列上(訊息跟著主體),不再放這裡。
                         ForEach(visibleTranscript) { line in
-                            TranscriptBubble(line: line, onQuote: uiState.notes == nil ? nil : { quote(line) })
+                            TranscriptBubble(line: line, onQuote: uiState.notes == nil ? nil : { quote(line) },
+                                             highlighted: line.id == highlightedLineID,
+                                             translation: translationState(line), onRetry: { uiState.notes?.translation.retry(line.id) })
+                                .id(line.id)   // UI-60:scrollTo 的錨
                         }
                         if visibleTranscript.isEmpty && !controller.isTranscribing {
                             // #949 REC-35:CLI 在錄的那一場沒有 GUI 的即時逐字稿,講清楚,不讓人以為壞了。
@@ -69,8 +94,10 @@ struct TranscriptPane: View {
                 // 只有「內容高度沒變、位移變了」才算使用者在捲(新行長出來那一下不算)。
                 .onScrollGeometryChange(for: ScrollProbe.self) { g in
                     ScrollProbe(contentHeight: g.contentSize.height,
-                                distanceFromBottom: g.contentSize.height - (g.contentOffset.y + g.containerSize.height))
+                                distanceFromBottom: g.contentSize.height - (g.contentOffset.y + g.containerSize.height),
+                                offset: g.contentOffset.y, containerHeight: g.containerSize.height)
                 } action: { _, p in
+                    uiState.transcriptScroll = [p.offset, p.contentHeight, p.containerHeight]   // DebugControl `state.transcriptScroll`(UI-60 驗證用)
                     defer { lastContentHeight = p.contentHeight }
                     guard controller.state == .recording, p.contentHeight == lastContentHeight else { return }
                     followPaused = p.distanceFromBottom > 40
@@ -91,10 +118,74 @@ struct TranscriptPane: View {
                         .help(L("跟到最新"))
                     }
                 }
+                // UI-60:選中建議 ⇒ 捲到該段。掛在逐字稿 ScrollView 自己的 reader 裡(第一版把 reader 包在整欄外面,
+                // 建議清單的 ScrollView 也在裡面,scrollTo 找不到 id、真機沒捲)。
+                .onChange(of: uiState.focusedSuggestionID) { _, id in focus(id, proxy) }
+                .onChange(of: uiState.transcriptScrollRequest) { _, r in debugScroll(r, proxy) }   // DEBUG 對照組
             }
             Label(L("分軌讓「誰說的」自動標好(對方左／你右)"), systemImage: "info.circle")
                 .font(MPFont.caption).foregroundStyle(.tertiary)
+            // #2623 TOK-04:這場的模型用量(有帳才顯示)。
+            if let line = uiState.notes?.tokenSummaryLine {
+                Label(line, systemImage: "number.circle").font(MPFont.caption).foregroundStyle(.tertiary)
+            }
+            // #2612 TRL-03:Apple 翻譯的 session 只能從 view 拿;隱形 host 掛在這裡。
+            if let tr = uiState.notes?.translation {
+                AppleTranslationHost(translation: tr, source: controller.language.resolved().language)
+            }
         }
+        // #2612:載入舊稿／轉稿完成 ⇒ 把既有譯文檔對回畫面上的行(不排佇列;錄音中由 controller 的 loop 排)。
+        .onChange(of: controller.liveTranscript.count) { _, _ in
+            guard controller.state == .idle || controller.state == .finished else { return }
+            uiState.notes?.translation.sync(transcript: controller.liveTranscript, language: controller.language, enqueue: false)
+        }
+        .onChange(of: controller.transcriptSource?.id) { _, _ in
+            uiState.notes?.translation.sync(transcript: controller.liveTranscript, language: controller.language, enqueue: false)
+        }
+        .onChange(of: controller.correctionSuggestions.isEmpty) { _, empty in
+            if empty { uiState.focusedSuggestionID = nil; highlightedLineID = nil }
+        }
+    }
+
+    /// UI-60:選中建議 ⇒ 逐字稿捲到該段並高亮;該段不在 3 分鐘視窗 ⇒ 先切「完整」、等一輪 layout 再捲。
+    private func focus(_ id: String?, _ proxy: ScrollViewProxy) {
+        guard let id, let item = controller.correctionSuggestions.first(where: { $0.id == id }),
+              let idx = CorrectionFocus.lineIndex(segment: item.suggestion.segment, count: controller.liveTranscript.count) else {
+            highlightedLineID = nil
+            return
+        }
+        let line = controller.liveTranscript[idx]
+        highlightedLineID = line.id
+        let needsFull = CorrectionFocus.needsFullTranscript(lineID: line.id, visible: visibleTranscript)
+        #if DEBUG
+        print("UI-60 focus id=\(id) idx=\(idx) full=\(uiState.fullTranscript) needsFull=\(needsFull)")
+        #endif
+        if needsFull, !uiState.fullTranscript {
+            uiState.fullTranscript = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                scrollNow(to: line.id, proxy)
+            }
+        } else {
+            scrollNow(to: line.id, proxy)
+        }
+    }
+
+    /// 只走 reader 的 scrollTo、不包動畫(第一版 reader 包整欄＋withAnimation 在真機零偏移;改成 reader 只包逐字稿
+    /// ScrollView、不包動畫後四個位置都捲到;🚫 不用 scrollPosition(id:) 綁定——它會在錄音中跟 UI-18「跟到最新」搶位置)。
+    private func scrollNow(to id: UUID, _ proxy: ScrollViewProxy) {
+        proxy.scrollTo(id, anchor: .center)
+    }
+
+    /// DebugControl `transcript scroll bottom|<index>`:對照組,走 UI-18「跟到最新」同一個 scrollTo。
+    private func debugScroll(_ request: String?, _ proxy: ScrollViewProxy) {
+        guard let request else { return }
+        let what = request.split(separator: "#").first.map(String.init) ?? ""
+        #if DEBUG
+        print("UI-60 debugScroll \(what) lines=\(controller.liveTranscript.count)")
+        #endif
+        if what == "bottom" { proxy.scrollTo("transcript-bottom", anchor: .bottom) }
+        else if let i = Int(what), i >= 0, i < controller.liveTranscript.count { proxy.scrollTo(controller.liveTranscript[i].id, anchor: .center) }
     }
 
     // UI-18: follow the newest line while recording. Not gated on "near bottom"
@@ -103,12 +194,21 @@ struct TranscriptPane: View {
     private struct ScrollProbe: Equatable {
         var contentHeight: CGFloat
         var distanceFromBottom: CGFloat
+        var offset: CGFloat
+        var containerHeight: CGFloat
     }
 
-    /// 泡泡 hover 的「引用到筆記」:`> 對方 h:mm:ss：…` 接在筆記文末,筆記欄沒開就開。
+    /// #2612 TRL-07:這一行的譯文狀態(顯示譯文關掉 ⇒ none)。
+    private func translationState(_ line: TranscriptLine) -> TranslationController.LineState {
+        guard let tr = uiState.notes?.translation, tr.isEnabled, tr.showTranslations else { return .none }
+        return tr.lineState(for: line.id)
+    }
+
+    /// 泡泡 hover 的「引用到筆記」:`> 對方 h:mm:ss：…` 接在筆記文末,筆記欄沒開就開;有譯文就原文＋譯文兩行(TRL-07)。
     private func quote(_ line: TranscriptLine) {
         guard let n = uiState.notes else { return }
-        n.appendQuote(speakerLabel: L(line.isYou ? "你" : "對方"), elapsed: line.start, text: line.text)
+        let text = n.translation.translations[line.id].map { line.text + "\n" + $0 } ?? line.text
+        n.appendQuote(speakerLabel: L(line.isYou ? "你" : "對方"), elapsed: line.start, text: text)
         if !uiState.panes.open.contains(.notes) { uiState.panes.toggle(.notes) }
     }
 
@@ -176,6 +276,11 @@ struct TranscriptBubble: View {
     let line: TranscriptLine
     /// #2438 M5:hover 出「引用到筆記」小鈕;nil＝不顯示(沒有筆記 session)。
     var onQuote: (() -> Void)? = nil
+    /// UI-60:被校正建議選中的那一段 ⇒ 加粗藍框、底色加深。
+    var highlighted = false
+    /// #2612 TRL-07:譯文在同一泡泡原文下方(該側顏色較淡的小字);翻譯中「⋯」、失敗「未譯」可點重送。
+    var translation: TranslationController.LineState = .none
+    var onRetry: (() -> Void)? = nil
     @State private var hovering = false
     var body: some View {
         VStack(alignment: line.isYou ? .trailing : .leading, spacing: MP.spXS) {
@@ -185,13 +290,25 @@ struct TranscriptBubble: View {
             Text(line.text.isEmpty ? "…" : line.text)
                 .font(MPFont.body)
                 .padding(.horizontal, MP.spM).padding(.vertical, MP.spS)
-                .background((line.isYou ? MP.blue : MP.coral).opacity(line.isFinal ? 0.16 : 0.08))
+                .background((line.isYou ? MP.blue : MP.coral).opacity(highlighted ? 0.28 : (line.isFinal ? 0.16 : 0.08)))
                 // UI-22 Phase C: volatile(非 final)虛線描邊區分「還在辨識中」,
                 // final 維持實線——比原本只靠 opacity 微調更一眼可辨。
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(
-                    (line.isYou ? MP.blue : MP.coral).opacity(0.3),
-                    style: StrokeStyle(lineWidth: 1, dash: line.isFinal ? [] : [4, 3])))
+                    highlighted ? MP.blue : (line.isYou ? MP.blue : MP.coral).opacity(0.3),
+                    style: StrokeStyle(lineWidth: highlighted ? 2 : 1, dash: line.isFinal ? [] : [4, 3])))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+            switch translation {
+            case .done(let t):
+                Text(t).font(MPFont.caption).foregroundStyle((line.isYou ? MP.blue : MP.coral).opacity(0.85))
+                    .padding(.horizontal, MP.spM).lineSpacing(2).textSelection(.enabled)
+            case .pending:
+                Text("⋯").font(MPFont.caption).foregroundStyle(.tertiary).padding(.horizontal, MP.spM)
+            case .failed:
+                Button { onRetry?() } label: { Text(L("未譯")).font(MPFont.caption).foregroundStyle(.orange) }
+                    .buttonStyle(.plain).padding(.horizontal, MP.spM).help(L("重送這一行"))
+            case .none:
+                EmptyView()
+            }
         }
         .frame(maxWidth: .infinity, alignment: line.isYou ? .trailing : .leading)
         .onHover { hovering = $0 }

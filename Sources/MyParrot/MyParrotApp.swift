@@ -106,6 +106,12 @@ final class AppUIState {
         showModelHint = false
     }
     var fullTranscript = false
+    /// UI-60:選中的校正建議 id(點建議列或 DebugControl `correction focus`);TranscriptPane 觀察它捲到對應段並高亮。
+    var focusedSuggestionID: String?
+    /// 逐字稿捲動區的 [offset, contentHeight, containerHeight](TranscriptPane 的 onScrollGeometryChange 寫;只給 DebugControl 讀,不驅動畫面)。
+    @ObservationIgnored var transcriptScroll: [Double] = []
+    /// DebugControl `transcript scroll bottom|<index>`(帶時間戳讓同一指令可重送);TranscriptPane 的 onChange 執行。
+    var transcriptScrollRequest: String?
     /// #2438 M4 面板工作區(UI-45/46):哪些直欄開著、順序、控制欄停靠邊、欄寬、檔案列表展開。
     /// 偏好只有 `panes.standard` 一把 JSON(plan §4);每次變動寫回。窄版不另存:`open` 在窄版
     /// 執行期視為空(`WorkspaceView` 依模式過濾),不寫回。
@@ -276,6 +282,13 @@ struct AppCommands: Commands {
             Button(L("複製 Markdown")) { uiState.notes?.copyMinutesMarkdown() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(uiState.notes?.minutes.document == nil)
+        }
+        CommandMenu(L("逐字稿翻譯")) {   // #2612 TRL-07
+            Button(L("立即翻譯")) { uiState.notes?.translation.translateNow() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!(uiState.notes?.translation.isEnabled ?? false))
+            Button(L("翻譯整份")) { if let n = uiState.notes { n.translateWholeNow(controller: controller) } }
+                .disabled(!(uiState.notes?.translation.isEnabled ?? false) || controller.liveTranscript.isEmpty)
         }
         CommandMenu(L("顯示方式")) {
             // 兩份二審都點出:這顆按鈕原本沒有 .disabled(uiState.showSettings),

@@ -487,7 +487,7 @@ extension SelfTest {
         let name = "UI-53 sidecar 改名計畫＋真改名＋回滾"
         var c = Checks()
         let fm = FileManager.default
-        c.expect(SidecarSet.extensions == ["caf", "m4a", "txt", "srt", "json", "notes.md", "minutes.md", "minutes.json", "zh-Hant.srt", "corrections.json", "live.srt"], "extensions 清單")
+        c.expect(SidecarSet.extensions == ["caf", "m4a", "txt", "srt", "json", "notes.md", "minutes.md", "minutes.json", "zh-Hant.srt", "corrections.json", "live.srt", "en.srt", "ja.srt", "ko.srt", "zh-Hans.srt", "tokens.json"], "extensions 清單")
         c.expect(Recording.derivedExtensions == SidecarSet.extensions, "derivedExtensions 轉呼叫")
         c.expect(SidecarSet.url(stem: URL(fileURLWithPath: "/t/a.b"), ext: "zh-Hant.srt").path == "/t/a.b.zh-Hant.srt", "url(stem:ext:) 含點")
         let sp = SidecarSet.splitName("2026-10-19 1930 Weekly sync")

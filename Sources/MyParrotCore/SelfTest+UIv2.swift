@@ -12,12 +12,18 @@ extension SelfTest {
         let ids = { (list: [ModelBackendInfo]) in list.map(\.id) }
 
         // 後端宣告的能力集合
-        if R.claudeCLI.capabilities != [.correction, .minutes] { fails.append("claudeCLI 能力應＝校正＋會議記錄,得 \(R.claudeCLI.capabilities)") }
+        if R.claudeCLI.capabilities != [.correction, .minutes, .translation] { fails.append("claudeCLI 能力應＝校正＋會議記錄＋翻譯(#2612),得 \(R.claudeCLI.capabilities)") }
         if R.claudeCLI.isLocal || R.claudeCLI.debugOnly { fails.append("claudeCLI 應 isLocal=false、debugOnly=false") }
         if R.off.capabilities != Set(ModelCapability.allCases) || !R.off.isLocal { fails.append("off 應支援全部能力且不出機") }
         if R.claudeCLI.id != CorrectionBackend.claudeCLI.rawValue || R.off.id != CorrectionBackend.off.rawValue { fails.append("登錄表 id 應等於 CorrectionBackend.rawValue") }
         if Set(ids(R.all)).count != R.all.count { fails.append("id 重複") }
-        if ids(R.backends(for: .translation)) != ["off"] { fails.append("翻譯 Phase 1 只有 off,得 \(ids(R.backends(for: .translation)))") }
+        // #2612:翻譯選單＝off／claudeCLI／codexCLI／appleTranslation(＋DEBUG localFake)
+        #if DEBUG
+        let trExpected = ["off", "claudeCLI", "codexCLI", "appleTranslation", "localFake"]
+        #else
+        let trExpected = ["off", "claudeCLI", "codexCLI", "appleTranslation"]
+        #endif
+        if ids(R.backends(for: .translation)) != trExpected { fails.append("翻譯應列 \(trExpected),得 \(ids(R.backends(for: .translation)))") }
 
         // 純過濾(兩種建置都跑):debugOnly 依旗標進出、能力不符不列
         let fixture = [R.off,
@@ -32,23 +38,25 @@ extension SelfTest {
         #if DEBUG
         branch = "DEBUG"
         if !R.includesDebugOnly { fails.append("DEBUG 建置 includesDebugOnly 應為 true") }
-        let expectedAll = AFMAvailability.isPlatformSupported ? ["off", "claudeCLI", "appleFM", "localFake"] : ["off", "claudeCLI", "localFake"]
+        let expectedAll = AFMAvailability.isPlatformSupported ? ["off", "claudeCLI", "codexCLI", "appleFM", "appleTranslation", "localFake"] : ["off", "claudeCLI", "codexCLI", "appleTranslation", "localFake"]
         if ids(R.all) != expectedAll { fails.append("DEBUG all 應為 \(expectedAll),得 \(ids(R.all))") }
-        for cap in [ModelCapability.correction, .minutes] where ids(R.backends(for: cap)) != expectedAll {
-            fails.append("DEBUG \(cap) 應列 \(expectedAll),得 \(ids(R.backends(for: cap)))")
+        let expectedCap = expectedAll.filter { $0 != "appleTranslation" }   // 校正／會議記錄不列只做翻譯的後端
+        for cap in [ModelCapability.correction, .minutes] where ids(R.backends(for: cap)) != expectedCap {
+            fails.append("DEBUG \(cap) 應列 \(expectedCap),得 \(ids(R.backends(for: cap)))")
         }
-        if R.localFake.capabilities != [.correction, .minutes] || !R.localFake.debugOnly || !R.localFake.isLocal { fails.append("localFake 宣告不對") }
+        if R.localFake.capabilities != [.correction, .minutes, .translation] || !R.localFake.debugOnly || !R.localFake.isLocal { fails.append("localFake 宣告不對") }
         if R.localFake.id != CorrectionBackend.localFake.rawValue { fails.append("localFake id 應等於 CorrectionBackend.localFake.rawValue") }
         #else
         branch = "release"
         if R.includesDebugOnly { fails.append("release 建置 includesDebugOnly 應為 false") }
-        let expectedAll = AFMAvailability.isPlatformSupported ? ["off", "claudeCLI", "appleFM"] : ["off", "claudeCLI"]
+        let expectedAll = AFMAvailability.isPlatformSupported ? ["off", "claudeCLI", "codexCLI", "appleFM", "appleTranslation"] : ["off", "claudeCLI", "codexCLI", "appleTranslation"]
         if ids(R.all) != expectedAll { fails.append("release all 應為 \(expectedAll),得 \(ids(R.all))") }
+        let expectedCap = expectedAll.filter { $0 != "appleTranslation" }
         for cap in ModelCapability.allCases where R.backends(for: cap).contains(where: \.debugOnly) {
             fails.append("release \(cap) 不應列 debugOnly 後端")
         }
-        for cap in [ModelCapability.correction, .minutes] where ids(R.backends(for: cap)) != expectedAll {
-            fails.append("release \(cap) 應列 \(expectedAll),得 \(ids(R.backends(for: cap)))")
+        for cap in [ModelCapability.correction, .minutes] where ids(R.backends(for: cap)) != expectedCap {
+            fails.append("release \(cap) 應列 \(expectedCap),得 \(ids(R.backends(for: cap)))")
         }
         #endif
 
@@ -63,16 +71,16 @@ extension SelfTest {
         }
         d.set("gpt9", forKey: "model.correction")
         if R.selected(for: .correction, defaults: d).id != "off" { fails.append("值不在表內應為 off") }
-        d.set("claudeCLI", forKey: "model.translation")
-        if R.selected(for: .translation, defaults: d).id != "off" { fails.append("後端不支援該能力應為 off") }
+        d.set("appleTranslation", forKey: "model.minutes")   // #2612:只做翻譯的後端拿去當會議記錄 ⇒ off
+        if R.selected(for: .minutes, defaults: d).id != "off" { fails.append("後端不支援該能力應為 off") }
         R.select("claudeCLI", for: .minutes, defaults: d)
         if d.string(forKey: "model.minutes") != "claudeCLI" || R.selected(for: .minutes, defaults: d).id != "claudeCLI" || !R.isEnabled(.minutes, defaults: d) {
             fails.append("select claudeCLI → model.minutes 應生效")
         }
         R.select("bogus", for: .minutes, defaults: d)
         if d.string(forKey: "model.minutes") != "off" || R.isEnabled(.minutes, defaults: d) { fails.append("select 不認得的 id 應寫 off") }
-        R.select("claudeCLI", for: .translation, defaults: d)
-        if d.string(forKey: "model.translation") != "off" { fails.append("select 不支援的能力應寫 off") }
+        R.select("appleTranslation", for: .correction, defaults: d)
+        if d.string(forKey: "model.correction") != "off" { fails.append("select 不支援的能力應寫 off") }
         #if DEBUG
         R.select("localFake", for: .correction, defaults: d)
         if R.selected(for: .correction, defaults: d).id != "localFake" { fails.append("DEBUG select localFake 應生效") }

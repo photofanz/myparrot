@@ -443,6 +443,7 @@ public final class RecordingController {
         // 再依登錄表解析;鍵不存在/值不認得/本建置不提供 ⇒ 關閉。
         correctionBackend = Self.loadCorrectionBackend(defaults: UserDefaults.standard)
         correctionModel = UserDefaults.standard.string(forKey: "correctionModel") ?? ""
+        codexModel = UserDefaults.standard.string(forKey: "codexModel") ?? ""
         if UserDefaults.standard.object(forKey: "autoTranscribe") != nil {
             transcribePolicy = TranscribePolicy.migrate(raw: UserDefaults.standard.string(forKey: TranscribePolicy.key),
                                                         legacy: UserDefaults.standard.object(forKey: TranscribePolicy.legacyKey) as? Bool)
@@ -1563,6 +1564,10 @@ public final class RecordingController {
     /// CORR-14:指定 `--model` 檔位;空字串＝跟 CLI 預設走。
     public var correctionModel: String = "" {
         didSet { defaults.set(correctionModel, forKey: "correctionModel") }
+    }
+    /// #2418 CDX-08:Codex CLI 的 `-m` 檔位(校正與會議記錄共用,與 Claude 的欄位分開——兩家檔名不同);空字串＝跟 CLI 預設走。
+    public var codexModel: String = "" {
+        didSet { defaults.set(codexModel, forKey: "codexModel") }
     }
     /// 畫面上這份逐字稿屬於哪一筆錄音(轉稿成功或從 .srt 載入時設定);校正改寫 sidecar 用。
     public internal(set) var transcriptSource: Recording?

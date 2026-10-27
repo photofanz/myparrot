@@ -1,5 +1,29 @@
 import Foundation
 
+/// UI-59(BUG-38):校正建議清單的高度政策——清單自己捲,高度＝min(內容高度, 上限);量到之前(0)給 1pt 讓內容先排版。
+public enum CorrectionListLayout {
+    public static let maxHeight: Double = 360
+    public static func height(content: Double, cap: Double = maxHeight) -> Double { min(max(content, 1), cap) }
+}
+
+/// UI-60:建議列 → 逐字稿對應段的純決策(點列跳段、列內展開原句、要不要先切「完整」)。
+public enum CorrectionFocus {
+    /// 段號對到 `liveTranscript` 的索引;稿已重轉變短、段號越界 ⇒ nil(不跳、不崩)。
+    public static func lineIndex(segment: Int, count: Int) -> Int? {
+        (0..<count).contains(segment) ? segment : nil
+    }
+    /// 原句裡 `original` 第一個逐字連續命中的範圍(前後空白先 trim;空字串／沒命中 ⇒ nil)。
+    public static func highlightRange(original: String, in text: String) -> Range<String.Index>? {
+        let needle = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nil }
+        return text.range(of: needle)
+    }
+    /// 該行不在目前可見視窗(3 分鐘)裡 ⇒ 要先切「完整」才捲得到。
+    public static func needsFullTranscript(lineID: UUID, visible: [TranscriptLine]) -> Bool {
+        !visible.contains { $0.id == lineID }
+    }
+}
+
 /// 逐字稿校正層(#2417)——一則「建議」:把第 `segment` 段裡的 `original` 改成
 /// `suggestion`。形狀照拾音(Shiyin):LLM 只能指出位置與替換字串,不能重寫整段;
 /// `original` 必須在該段原文裡**一字不差、連續出現**,否則整則作廢(見 `CorrectionRules.validate`)。

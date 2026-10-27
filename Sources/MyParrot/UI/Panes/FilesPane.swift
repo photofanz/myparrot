@@ -267,10 +267,18 @@ struct RecordingRow: View {
                 if hasNotes { Button(L("打開筆記")) { NSWorkspace.shared.open(notesURL) } }
                 if hasMinutes { Button(L("打開會議記錄")) { NSWorkspace.shared.open(minutesURL) } }
             }
+            if FileManager.default.fileExists(atPath: TokenLedger.url(stem: stem).path) {
+                Divider()
+                Button(L("模型用量…")) { FileActions.showTokenUsage(rec) }   // #2623 TOK-03
+            }
             Divider()
             let locked = controller.isFileActionLocked(rec)
             if controller.pendingHighAccuracy.contains(rec.id) {
                 Button(L("現在重轉")) { controller.transcribeNow(rec) }   // #2483 E
+            }
+            if uiState?.notes?.translation.isEnabled == true, rec.hasTranscript {
+                Button(L("翻譯整份")) { FileActions.translateWhole(rec, controller: controller, session: uiState?.notes) }   // #2612 TRL-09
+                    .disabled(locked)
             }
             Button(L("重新命名…")) { FileActions.rename(rec, controller: controller, session: uiState?.notes) }
                 .disabled(locked)

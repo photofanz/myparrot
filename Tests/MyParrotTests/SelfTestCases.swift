@@ -41,9 +41,19 @@ struct SelfTestCases {
     @Test("UI-41 無聲橫幅自動收起+再跳門檻") func warningAutoDismissRules() { check(SelfTest.warningAutoDismissRules()) }
     @Test("QUIT-12/13 轉稿中退出詢問與未完成標記") func quitTranscriptionGuard() { check(SelfTest.quitTranscriptionGuard()) }
     @Test("CORR-03/04 校正建議驗證/套用/還原") func correctionRules() { check(SelfTest.correctionRules()) }
+    @Test("UI-59 校正建議清單高度(min(內容,360)、0→1)") func correctionListHeight() { check(SelfTest.correctionListHeight()) }
+    @Test("UI-60 建議列→逐字稿段(lineIndex/highlightRange/需切完整)") func correctionFocus() { check(SelfTest.correctionFocus()) }
     @Test("SRT 來回(make→parse)") func srtRoundTrip() { check(SelfTest.srtRoundTrip()) }
     @Test("CORR-06/13 提示詞範圍+CLI 參數鎖定") func correctionPromptAndArgs() { check(SelfTest.correctionPromptAndArgs()) }
     @Test("CORR-09 CLI 輸出解析") func correctionParseOutput() { check(SelfTest.correctionParseOutput()) }
+    @Test("CDX-01 Codex 登錄表(能力/順序/隱私鍵/往返)") func codexRegistry() { check(SelfTest.codexRegistry()) }
+    @Test("CDX-04 Codex 參數鎖定+登入判定+提示詞合成") func codexArguments() { check(SelfTest.codexArguments()) }
+    @Test("CDX-07 Codex 輸出解析(-o 優先/JSONL 退回/失敗型,訊息不含原文)") func codexParseOutput() { check(SelfTest.codexParseOutput()) }
+    @Test("TRL-01 翻譯登錄表與目標語言") func translationRegistry() { check(SelfTest.translationRegistry()) }
+    @Test("TRL-04 翻譯批次與節奏") func translationPlan() { check(SelfTest.translationPlan()) }
+    @Test("TRL-05 翻譯提示詞與解析(兩家)") func translationPromptAndParse() { check(SelfTest.translationPromptAndParse()) }
+    @Test("TRL-08 譯文檔對齊") func translationSRT() { check(SelfTest.translationSRT()) }
+    @Test("TOK-01 每場模型用量帳本(append/load/totals/壞檔/format)") func tokenLedger() { check(SelfTest.tokenLedger()) }
     @Test("AUD-35 tap 排除自己的行程(純決策)") func tapExcludesSelf() { check(SelfTest.tapExcludesSelf()) }
     @Test("DBG-01 控制通道指令切分與結果檔路徑") func debugCommandParsing() { check(SelfTest.debugCommandParsing()) }
     @Test("UPD-01 版號解析/比較(v 前綴/補 0/非數字段)") func updateVersionCompare() { check(SelfTest.caseUpdateVersionCompare()) }

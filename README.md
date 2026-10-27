@@ -17,6 +17,14 @@
 <img src="docs/img/main-window-dark.png" width="560" alt="Main window (dark) — obsidian controller">
 </p>
 
+## What's new in 0.5.2
+
+- **Transcript translation** — a “Translate → …” control in the transcript column shows a translation under each finalized line. Three backends: **Apple Translate** (on-device, free, line-by-line in real time, roughly the quality of the system Translate app), or **Claude CLI** / **Codex CLI** (batched, one batch per minute by default, better quality, billed to your own subscription). Translations are saved as `<recording>.zh-Hant.srt`; the original transcript is never touched; right-click an old recording for “Translate Whole Transcript”. Off by default — enable it under Settings → Model → Transcript translation, and set the recognition language to the meeting’s language.
+- **Codex CLI as a third model backend** — minutes and correction can now use your locally signed-in `codex` (ChatGPT subscription), with the same privacy notice before you turn it on. Each call carries a fixed ~13.5k-token base (vs ~1.5k for Claude CLI), so it suits batches every few minutes.
+- **Per-meeting model usage** — every correction, minutes and translation call is appended to `<recording>.tokens.json`; the transcript column footer shows “Model usage this session: Correction Claude 2.0k · Minutes Codex 14.7k”, and right-click a recording → “Model Usage…” for the breakdown by feature × backend.
+- **Correction suggestion list** — scrolls on its own instead of pushing the transcript off-screen; click a suggestion to expand the original sentence (mis-heard words highlighted) and jump the transcript to that segment.
+- First-run hint rewritten: the Apple on-device model keeps everything on the Mac; Claude / Codex use your own subscriptions.
+
 ## What's new in 0.5.1
 
 - **Fixed: switching the mic to a Bluetooth headset mid-recording stalled the whole app** — the engine rebuild ran on the main thread (about 6 s per attempt while the headset enters call mode) and could loop as the link flipped between A2DP and HFP. Microphone engines are now built on a background queue, the new engine is prepared *before* the old one stops (the gap in your track is 0.1–0.3 s instead of ~6 s), and a Bluetooth input is held in call mode while in use so its format stays stable. Expect a 5–6 s "switching…" spinner on the mic pill; the rest of the app stays responsive.
@@ -66,7 +74,7 @@
 - **The other side** — Core Audio **Process Tap** (macOS 14.4+): captures system audio with no driver, no kernel extension, no virtual audio device
 - **You** — AVAudioEngine microphone capture that **survives device/route changes mid-recording** (auto-heal on configuration change + a liveness watchdog; hot-swap mics without stopping — the file stays continuous)
 - **Live transcript** while recording — swappable engines: macOS 26 **SpeechAnalyzer** (long-form streaming, automatic fallback to SFSpeechRecognizer on macOS 15), or a fully local **Whisper** engine (whisper.cpp + Metal, large-v3 family) for stronger mixed-language (Mandarin/English) accuracy. After you stop, a higher-precision Whisper re-transcription runs when the Mac is idle (or immediately / never); the live transcript is kept alongside as `.live.srt`
-- **Notes, meeting minutes and transcript correction** — a Markdown note per recording; optional AI minutes and correction suggestions (off by default) through an **Apple on-device model** or your local **Claude CLI**, behind a single “Model” section in Settings
+- **Notes, meeting minutes, transcript correction and translation** — a Markdown note per recording; optional AI minutes, correction suggestions and transcript translation (off by default) through **Apple on-device model / Apple Translate**, your local **Claude CLI** or **Codex CLI**, behind a single “Model” section in Settings; per-meeting model usage is logged to `.tokens.json`
 - **Appearance** — follow system / light / dark; Siri Remote–style controller in silver (light) or obsidian (dark)
 - Whisper models download in-app (Settings) or drop a `ggml-*.bin` into Application Support yourself — nothing is bundled, nothing calls home unless you ask it to
 - **Transcribe past recordings** → `.txt` + timestamped, speaker-prefixed `.srt`, with automatic simplified→traditional Chinese normalization on Whisper output
@@ -74,7 +82,7 @@
 - Auto CAF→m4a conversion, quit-protection while recording, floating mini mode, input-gain with soft limiter
 - UI in English / 繁體中文 / 简体中文 / 日本語 / 한국어
 - A build stamp in the footer, so you always know exactly which build you're running
-- **Privacy**: offline by default. The network is used only for the optional update check (GitHub Releases), Whisper model downloads you start yourself, and — **only if you enable the Claude CLI backend** — meeting-minutes / correction requests sent through your local `claude` command to Anthropic (what gets sent is the transcript and your notes; a notice explains this before you can turn it on). The Apple on-device backend never leaves the Mac. Calendar reminders (off by default) need Calendar and Notifications permission
+- **Privacy**: offline by default. The network is used only for the optional update check (GitHub Releases), Whisper model downloads you start yourself, and — **only if you enable the Claude CLI or Codex CLI backend** — meeting-minutes / correction / translation requests sent through your local `claude` / `codex` command to Anthropic / OpenAI (what gets sent is the transcript and your notes; a notice explains this before you can turn it on). The Apple on-device model and Apple Translate backends never leave the Mac. Calendar reminders (off by default) need Calendar and Notifications permission
 
 ## Requirements
 
@@ -141,6 +149,7 @@ A `transcribe` hook can **replace** the built-in transcription (bring your own A
 | Bluetooth headset as *output* while any app holds a BT mic | Phone-quality ceiling — protocol limitation (HFP), not fixable in software |
 | Hot-swapping *to* a Bluetooth mic mid-recording | 5–6 s while the headset enters call mode (shown as "switching…"); one audible pop; the gap in your track is under 0.3 s |
 | Bluetooth headset *reconnecting* while recording on the built-in mic | Your track may drop ~8 s while the engine self-heals — fix planned |
+| Apple Translate | System-Translate quality: everyday sentences read fine, idioms get literal mistranslations; use Claude / Codex batches for quality. If the recognition language follows the system and equals the target, the backend reports “nothing to translate” |
 | iPhone Continuity mic | 1.5–2 s to switch (device start-up time) |
 | Capture gaps shorter than 0.3 s | Not silence-padded (trade-off that eliminates padding clicks); the track may shift ≤0.3 s early in that window |
 | Echo cancellation | Offline post-process only, off by default |

@@ -19,6 +19,8 @@ final class MinutesController {
     static let cadenceRange = 2...15
     /// MIN-08:與校正層共用的 Claude CLI 模型檔位欄位(`RecordingController.correctionModel` 寫的那把鍵)。
     static let cliModelKey = "correctionModel"
+    /// #2418 CDX-08:Codex CLI 的檔位欄位(`RecordingController.codexModel` 寫的那把鍵),與 Claude 的分開。
+    static let codexModelKey = "codexModel"
 
     var document: MinutesDocument?
     var lastUpdate: Date?
@@ -31,7 +33,7 @@ final class MinutesController {
     private(set) var autoPaused = false
     /// 後端選了、但這台跑不起來的原因(找不到 claude);nil＝沒問題或後端關閉。
     private(set) var unavailableReason: String?
-    /// 目前解析到的後端 id(off／claudeCLI／localFake)。
+    /// 目前解析到的後端 id(off／claudeCLI／codexCLI／appleFM／localFake)。
     private(set) var backendID: String = ModelBackendRegistry.offID
     /// 目前附著的錄音 stem(`<dir>/<日期 時間 標題>`,不含副檔名);nil＝待錄音。
     private(set) var stem: URL?
@@ -80,7 +82,7 @@ final class MinutesController {
     /// 這個建置真的會產會議記錄的後端(report-M6 題 A 裁示 A2:設定頁只列這些,G1 第 1 條「沒設供應商功能不出現」)。
     /// Phase 2:Claude CLI 接上;Apple Foundation Models 挪 Phase 3(Eric 2026-10-19 22:31 A2)。
     static var implementedBackendIDs: Set<String> {
-        var ids: Set<String> = [ModelBackendRegistry.offID, ModelBackendRegistry.claudeCLI.id]
+        var ids: Set<String> = [ModelBackendRegistry.offID, ModelBackendRegistry.claudeCLI.id, ModelBackendRegistry.codexCLI.id]   // #2418 CDX
         // #2438 Phase 3a:Apple Foundation Models(macOS 26+ 才進表;可不可用另看 AppleFMAvailability)。
         if AFMAvailability.isPlatformSupported { ids.insert(ModelBackendRegistry.appleFM.id) }
         #if DEBUG
@@ -113,6 +115,16 @@ final class MinutesController {
             #endif
             provider = nil
             unavailableReason = afm.message ?? L("Apple 本機模型目前無法使用")
+            return
+        }
+        if selected.id == ModelBackendRegistry.codexCLI.id {
+            // #2418 CDX-02/03:第三個後端;找不到 codex ⇒ 選擇保留、講原因、不建 provider。
+            if let exe = CodexCLIProvider.locate() {
+                provider = CodexCLIMinutesProvider(executable: exe, model: defaults.string(forKey: Self.codexModelKey), timeout: 120)
+            } else {
+                provider = nil
+                unavailableReason = L("找不到 codex 指令,請先安裝 Codex CLI")
+            }
             return
         }
         if selected.id == ModelBackendRegistry.claudeCLI.id {
@@ -226,6 +238,12 @@ final class MinutesController {
             outputTokens += doc.outputTokens
             transcriptLinesConsumed = transcript.count
             lastNotesHash = notesHash
+            // #2623 TOK-02:成功後追加一筆到這場的帳本(Apple 本機模型＝估算)。
+            if let s = stem, !TokenLedger.append(stem: s, TokenEntry(feature: .minutes, backend: backendID, inputTokens: doc.inputTokens,
+                                                                      outputTokens: doc.outputTokens, durationMs: Int(Date().timeIntervalSince(started) * 1000),
+                                                                      units: delta.count, estimated: backendID == ModelBackendRegistry.appleFM.id)) {
+                Self.log.error("tokens: append failed (minutes)")
+            }
             lastError = nil
             consecutiveFailures = 0
             write(doc, labels: fileLabels)
@@ -250,6 +268,8 @@ final class MinutesController {
         switch e {
         case .cliNotFound: return L("找不到 claude 指令,請先安裝 Claude Code")
         case .notLoggedIn: return L("Claude Code 尚未登入,請在終端機執行 claude /login")
+        case .codexNotFound: return L("找不到 codex 指令,請先安裝 Codex CLI")
+        case .codexNotLoggedIn: return L("Codex CLI 尚未登入,請在終端機執行 codex login")
         case .timeout: return L("會議記錄更新逾時,請稍後再試")
         case .badOutput(let s): return Lf("會議記錄回應無法解析:%@", [s])
         case .failed(let code, let s): return Lf("會議記錄更新失敗(exit %@):%@", ["\(code)", s])

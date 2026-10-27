@@ -4,6 +4,9 @@ import Foundation
 public enum MinutesError: Error, Sendable, Equatable {
     case cliNotFound
     case notLoggedIn
+    /// #2418 CDX-03:`codex` 找不到／未登入。
+    case codexNotFound
+    case codexNotLoggedIn
     case timeout
     case badOutput(String)      // 一句摘要
     case failed(Int32, String)  // exit code + 一句摘要

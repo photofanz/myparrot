@@ -64,7 +64,7 @@ struct RootView: View {
             Button(L("打開設定")) { uiState.modelHintOpenSettings() }
             Button(L("稍後"), role: .cancel) { uiState.modelHintLater() }
         } message: {
-            Text(L("這兩個功能預設關閉,沒選模型後端時不會出現。到「設定 → 模型」各自選後端(目前支援 Claude CLI,在本機執行)。隨時可以再關掉。"))
+            Text(L("這兩個功能預設關閉,沒選模型後端時不會出現。到「設定 → 模型」各自選後端:Apple 本機模型資料不出機;Claude CLI／Codex CLI 用你自己的訂閱。隨時可以再關掉。"))
         }
         // #2438 M5:筆記／會議記錄跟著錄音狀態與選中列走(plan §3.5 文件切換)。
         .onAppear { syncNotesInitial() }
@@ -74,6 +74,7 @@ struct RootView: View {
             guard let n = uiState.notes, let s = n.stem, let src = controller.transcriptSource,
                   SidecarSet.stem(of: src.url) == s else { return }
             n.minutes.rebase()
+            n.translation.markStale()   // #2612 TRL-09:譯文清空、提示重翻
         }
         .onChange(of: uiState.selectedRecording) { _, id in selectRecording(id) }
     }
@@ -94,6 +95,7 @@ struct RootView: View {
             n.recordingStarted(url: url, title: controller.currentTitle)
             n.minutes.startAuto(transcript: { controller.liveTranscript }, notes: { n.store.text },
                                 language: { controller.language })
+            n.translation.startAuto(transcript: { controller.liveTranscript }, language: { controller.language })   // #2612
         } else {
             // 錄音檔 URL 在狀態翻成 recording 的同一輪可能還沒指定,晚半秒再試一次。
             Task { @MainActor in
@@ -111,10 +113,12 @@ struct RootView: View {
         case .finished:
             n.recordingStopped()
             n.minutes.endAuto()
+            n.translation.endAuto()   // #2612:剩下的定稿行最後送一批
             // E 定案:自動模式下結束時也自動跑最後一次(MIN-04:沒新東西就不花錢)。
             if n.minutes.autoEnabled, n.minutes.isAvailable { Task { await n.updateMinutesNow(controller: controller, manual: false) } }
         case .idle:
             n.minutes.endAuto()
+            n.translation.endAuto()
             n.showDraft()
         default:
             break
@@ -127,6 +131,8 @@ struct RootView: View {
         guard controller.state == .idle || controller.state == .finished else { return }
         n.show(recording: rec.url)
         if rec.hasTranscript { _ = controller.loadTranscript(for: rec) }
+        // #2612 TRL-08:載入那場的稿之後直接把既有譯文檔對回畫面(不靠 onChange——同行數或同一場重選時 count／id 都不變)。
+        n.translation.sync(transcript: controller.liveTranscript, language: controller.language, enqueue: false)
     }
 
     // UI-19: 廣告欄位現階段放大叔的 LinkedIn(Eric 2026-07-02 指定)。

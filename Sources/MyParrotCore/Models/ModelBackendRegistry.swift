@@ -14,7 +14,9 @@ public enum ModelBackendRegistry {
         // l10n-keys:begin
         static let off = "關閉"
         static let claudeCLI = "Claude CLI(本機)"
+        static let codexCLI = "Codex CLI(本機)"
         static let appleFM = "Apple 本機模型"
+        static let appleTranslation = "Apple 翻譯(本機)"
         #if DEBUG
         static let localFake = "本地假供應商(測試用)"
         #endif
@@ -29,16 +31,24 @@ public enum ModelBackendRegistry {
 
     /// 本機 `claude` CLI(#2417 校正層配方;會議記錄 Phase 2 接)。資料會經 CLI 送到 Anthropic ⇒ 不是本機後端。
     public static let claudeCLI = ModelBackendInfo(id: CorrectionBackend.claudeCLI.rawValue, label: Labels.claudeCLI,
-                                                   capabilities: [.correction, .minutes], isLocal: false)
+                                                   capabilities: [.correction, .minutes, .translation], isLocal: false)   // #2612 翻譯批次
+
+    /// #2418 CDX-01:本機 `codex` CLI(ChatGPT 訂閱);資料經 CLI 送到 OpenAI ⇒ 出機後端、第一次選要跳隱私框。
+    public static let codexCLI = ModelBackendInfo(id: CorrectionBackend.codexCLI.rawValue, label: Labels.codexCLI,
+                                                  capabilities: [.correction, .minutes, .translation], isLocal: false)   // #2612 翻譯批次
 
     /// #2438 Phase 3a:Apple Foundation Models(macOS 26+)。資料不出機 ⇒ 本機後端、不跳隱私框;只在支援的 OS 進表。
     public static let appleFM = ModelBackendInfo(id: CorrectionBackend.appleFM.rawValue, label: Labels.appleFM,
                                                  capabilities: [.correction, .minutes], isLocal: true)
 
+    /// #2612 TRL-01:Apple Translation framework(macOS 15+,本機、零 token、逐行即時);只做翻譯,不跳隱私框。
+    public static let appleTranslation = ModelBackendInfo(id: "appleTranslation", label: Labels.appleTranslation,
+                                                          capabilities: [.translation], isLocal: true)
+
     #if DEBUG
     /// 假供應商(DEBUG 驗證用,回固定內容)。
     public static let localFake = ModelBackendInfo(id: CorrectionBackend.localFake.rawValue, label: Labels.localFake,
-                                                   capabilities: [.correction, .minutes], isLocal: true, debugOnly: true)
+                                                   capabilities: [.correction, .minutes, .translation], isLocal: true, debugOnly: true)
     #endif
 
     /// 登錄表全部後端(順序＝設定頁選單順序)。
@@ -46,8 +56,9 @@ public enum ModelBackendRegistry {
 
     /// 純函式(可測):依「這台 OS 有沒有 FoundationModels」決定 appleFM 進不進表;DEBUG 才有 localFake。
     public static func assemble(platformSupportsAFM: Bool) -> [ModelBackendInfo] {
-        var list = [off, claudeCLI]
+        var list = [off, claudeCLI, codexCLI]
         if platformSupportsAFM { list.append(appleFM) }
+        list.append(appleTranslation)   // #2612
         #if DEBUG
         list.append(localFake)
         #endif

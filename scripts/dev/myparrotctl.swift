@@ -9,6 +9,7 @@
 //   myparrotctl check-transcript /tmp/r.json      跑校正(結果含建議 id)
 //   myparrotctl correction accept <id> /tmp/r.json   accept|ignore|revert
 //   myparrotctl corrections ignore-all /tmp/r.json
+//   myparrotctl correction focus <id> /tmp/r.json    UI-60:選中該則(列內展開原句、逐字稿捲到該段並高亮;state 帶 focusedSuggestion/fullTranscript)
 //   myparrotctl backend localFake /tmp/r.json     off|claudeCLI|localFake(舊指令,只管校正;同 model set correction)
 //   #2438 M6 模型(MDL-05;state 也帶 "model":{correction,minutes,translation}、"modelPending"、"minutesEnabled"):
 //   myparrotctl model list /tmp/r.json              每個能力:可選後端 id、出機後端、目前選的；privacyAccepted
@@ -33,6 +34,13 @@
 //   myparrotctl files search 週會 /tmp/r.json ; files select 0 /tmp/r.json ; files locked 0 /tmp/r.json
 //   myparrotctl files rename 0 新標題 /tmp/r.json ; files trash 0 /tmp/r.json(真丟垃圾桶,只對示範夾用)
 //   myparrotctl minutes status|update /tmp/r.json ; minutes cadence 2 /tmp/r.json ; minutes auto on|off /tmp/r.json
+//   #2623 每場模型用量(TOK-06;state 也帶 "tokens"):
+//   myparrotctl tokens status /tmp/r.json ; tokens inject correction|minutes|translation <backend> <in> <out> /tmp/r.json(要先 files select 一場)
+//   #2612 翻譯(TRL-13;state 也帶 "translation"):
+//   myparrotctl translation status|update|whole|retry /tmp/r.json ; translation target zh-Hant|en|ja|ko|zh-Hans /tmp/r.json
+//   myparrotctl translation live on|off /tmp/r.json      把畫面上的稿當錄音中來源起/停自動翻譯 loop(驗節奏與排隊,不必真錄音)
+//   myparrotctl translation cadence 30|60|120|300 /tmp/r.json ; translation show on|off /tmp/r.json
+//   myparrotctl translation availability force installed|supported|unsupported /tmp/r.json ; translation availability clear /tmp/r.json
 //   #2438 M4 面板工作區(UI-45～48;結果含 panes JSON、visibleColumns、windowFrame、screenVisibleFrame):
 //   myparrotctl panes /tmp/r.json                   讀面板狀態(state 也帶 "panes"／"windowFrame")
 //   myparrotctl pane notes on /tmp/r.json           transcript|notes|minutes|files  on|off(files＝檔案列表展開)

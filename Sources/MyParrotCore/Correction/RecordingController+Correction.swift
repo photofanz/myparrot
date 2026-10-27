@@ -27,6 +27,10 @@ extension RecordingController {
         case .claudeCLI:
             guard let exe = ClaudeCLIProvider.locate() else { throw CorrectionError.cliNotFound }
             return ClaudeCLIProvider(executable: exe, model: correctionModel)
+        case .codexCLI:
+            // #2418 CDX-02/03:第三個後端,只多這一個 case;找不到 codex ⇒ 丟錯(入口由設定頁狀態列講原因)。
+            guard let exe = CodexCLIProvider.locate() else { throw CorrectionError.codexNotFound }
+            return CodexCLIProvider(executable: exe, model: codexModel)
         case .appleFM:
             // #2438 Phase 3a(AFM-01):每次建 provider 前都探一次可用性;不可用 ⇒ 丟原因,不假裝能用。
             let status = AFMAvailability.probe()
@@ -75,6 +79,14 @@ extension RecordingController {
                 let r = try await provider.suggest(segments: segments, range: range, language: language)
                 collected += CorrectionRules.validate(r.suggestions, segments: segments, range: range)
                 inTok += r.inputTokens; outTok += r.outputTokens; ms += r.durationMs
+                // #2623 TOK-02:每批成功後追加一筆到這場的帳本(只記數字);寫失敗只記 log。
+                if let src = transcriptSource,
+                   !TokenLedger.append(stem: SidecarSet.stem(of: src.url),
+                                       TokenEntry(feature: .correction, backend: correctionBackend.rawValue, inputTokens: r.inputTokens,
+                                                  outputTokens: r.outputTokens, durationMs: r.durationMs, units: range.count,
+                                                  estimated: correctionBackend == .appleFM)) {
+                    Logger(subsystem: "tw.uncle.MyParrot", category: "tokens").error("tokens: append failed (correction)")
+                }
             } catch let e as CorrectionError {
                 lastError = e.zhTW; break                      // 一則提示、不重試、不改檔(CORR-09)
             } catch {

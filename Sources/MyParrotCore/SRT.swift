@@ -4,7 +4,7 @@ import Foundation
 /// `HH:MM:SS,mmm --> HH:MM:SS,mmm` timecodes and a speaker prefix, so the timed
 /// transcript opens in any player / editor (Premiere, DaVinci, VLC, YouTube…).
 public enum SRT {
-    static func make(from lines: [TranscriptLine]) -> String {
+    public static func make(from lines: [TranscriptLine]) -> String {
         let cues = lines.filter { !$0.text.isEmpty }.sorted { $0.start < $1.start }
         var out = ""
         for (i, line) in cues.enumerated() {

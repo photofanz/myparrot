@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.1</string>
+	<string>0.5.2</string>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>9</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
@@ -34,9 +34,9 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MyParrot 需要麥克風,才能錄下「你」的聲音。</string>
-	<key>NSUserNotificationsUsageDescription</key>
-	<string>MyParrot 用通知在會議開始前提醒你錄音。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>MyParrot 使用本機語音辨識把錄音轉成逐字稿。</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>MyParrot 用通知在會議開始前提醒你錄音。</string>
 </dict>
 </plist>

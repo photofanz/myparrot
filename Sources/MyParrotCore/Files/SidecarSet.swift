@@ -27,7 +27,9 @@ public enum SidecarSet {
     /// 翻譯字幕(zh-Hant.srt,Phase 3)。
     public static let extensions = ["caf", "m4a", "txt", "srt", "json",
                                     "notes.md", "minutes.md", "minutes.json", "zh-Hant.srt",
-                                    "corrections.json", "live.srt"]   // #2483 C:校正紀錄、重轉前的即時稿
+                                    "corrections.json", "live.srt",   // #2483 C:校正紀錄、重轉前的即時稿
+                                    "en.srt", "ja.srt", "ko.srt", "zh-Hans.srt",   // #2612 TRL-08:其他目標語言的譯文檔
+                                    "tokens.json"]   // #2623 TOK-01:每場模型用量帳本
 
     public typealias Move = (from: URL, to: URL)
 

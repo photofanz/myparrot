@@ -13,6 +13,11 @@ final class NotesSession {
     let store: NotesStore
     let proxy = NotesEditorProxy()
     let minutes = MinutesController()
+    /// #2612 TRL:逐字稿翻譯,跟著同一場走(attach 與會議記錄同步)。
+    let translation = TranslationController()
+    /// #2623 TOK:這場的帳本(附著時讀;`TokenLedger.didChange` 到就重讀)。
+    private(set) var tokens: [TokenEntry] = []
+    @ObservationIgnored private var tokenObserver: NSObjectProtocol?
     /// 目前顯示的那場 stem；nil＝草稿。
     private(set) var stem: URL?
     var isDraft: Bool { stem == nil }
@@ -24,6 +29,45 @@ final class NotesSession {
         self.recordingsDir = recordingsDir
         self.store = store
         minutes.fileLabels = Self.localizedLabels()
+        // 觀察者活到 app 結束(NotesSession 單一實例);Notification 非 Sendable,先把 stem(URL)取出再進 MainActor。
+        tokenObserver = NotificationCenter.default.addObserver(forName: TokenLedger.didChange, object: nil, queue: .main) { [weak self] note in
+            let changed = note.userInfo?[TokenLedger.stemKey] as? URL
+            MainActor.assumeIsolated {
+                guard let self, let s = changed, s == self.stem else { return }
+                self.reloadTokens()
+            }
+        }
+    }
+
+    // MARK: #2623 TOK-04 本場模型用量
+
+    func reloadTokens() {
+        tokens = stem.map { TokenLedger.load(stem: $0) } ?? []
+    }
+
+    /// 逐字稿欄底部那一行(Eric 10/27 12:37「那一行也分後端」):「本場模型用量 校正 Claude 2.0k · 記錄 Codex 14.7k」;
+    /// 能力 × 後端各一段(同能力兩家都用過就各列),只列 tokens >0 的,估算前加 ≈;全 0 ⇒ nil。
+    var tokenSummaryLine: String? {
+        let t = TokenLedger.totals(tokens)
+        let order: [(ModelCapability, String)] = [(.correction, L("校正")), (.minutes, L("記錄")), (.translation, L("翻譯"))]
+        var parts: [String] = []
+        for (cap, label) in order {
+            guard let backends = t.byFeatureBackend[cap.rawValue] else { continue }
+            for (backend, s) in backends.sorted(by: { $0.value.total > $1.value.total }) where s.total > 0 {
+                parts.append("\(label) \(Self.backendShort(backend)) \(s.estimated ? "≈" : "")\(TokenLedger.format(s.total))")
+            }
+        }
+        return parts.isEmpty ? nil : L("本場模型用量") + " " + parts.joined(separator: " · ")
+    }
+
+    /// 後端短名(品牌字不翻譯):claudeCLI→Claude、codexCLI→Codex、appleFM／appleTranslation→Apple、其他原樣。
+    static func backendShort(_ id: String) -> String {
+        switch id {
+        case ModelBackendRegistry.claudeCLI.id: return "Claude"
+        case ModelBackendRegistry.codexCLI.id: return "Codex"
+        case ModelBackendRegistry.appleFM.id, ModelBackendRegistry.appleTranslation.id: return "Apple"
+        default: return id
+        }
     }
 
     /// 會議記錄四段＋時間軸的介面文字(面板、複製、`.minutes.md` 共用一份)。
@@ -39,6 +83,8 @@ final class NotesSession {
         guard store.load(url: NotesDocument.draftURL(in: recordingsDir)) else { return }
         stem = nil
         minutes.attach(stem: nil)
+        translation.attach(stem: nil)
+        reloadTokens()
     }
 
     /// 開錄：草稿改名成該場筆記並鎖住；`title` nil ⇒ 用 stem 的標題部分。
@@ -49,6 +95,8 @@ final class NotesSession {
         stem = s
         lockedStem = s
         minutes.attach(stem: s)
+        translation.attach(stem: s)
+        reloadTokens()
     }
 
     /// 停錄：解鎖（仍顯示那場）。
@@ -66,6 +114,8 @@ final class NotesSession {
         guard store.load(url: NotesDocument(stem: s).url) else { return false }
         stem = s
         minutes.attach(stem: s)
+        translation.attach(stem: s)
+        reloadTokens()
         return true
     }
 
@@ -76,6 +126,8 @@ final class NotesSession {
             store.retarget(to: NotesDocument(stem: new).url)
             stem = new
             minutes.attach(stem: new)
+            translation.attach(stem: new)
+            reloadTokens()
         }
         if lockedStem == old { lockedStem = new }
     }
@@ -86,6 +138,8 @@ final class NotesSession {
             store.detach()
             stem = nil
             minutes.attach(stem: nil)
+            translation.attach(stem: nil)
+            reloadTokens()
         }
     }
 
@@ -125,6 +179,15 @@ final class NotesSession {
         let isURL = MarkdownEditing.isLikelyURL(clip)
         proxy.apply { MarkdownEditing.insertLink($0, selection: $1, url: isURL ? clip : "url", clipboardIsURL: isURL) }
         proxy.focus()
+    }
+
+    /// #2612 TRL-09:翻譯整份——用會議記錄同一套「哪份逐字稿」規則(進行中／已載入 ⇒ liveTranscript;否則讀該場 .srt)。
+    func translateWholeNow(controller: RecordingController) {
+        // 畫面上有載入的稿但這個 session 還沒附著那場(選單／DebugControl 路徑)⇒ 先附著,譯文檔才有 stem 可寫。
+        if stem == nil, let src = controller.transcriptSource { _ = show(recording: src.url) }
+        let t = minutesTranscript(controller: controller)
+        guard !t.lines.isEmpty else { return }
+        translation.translateWhole(lines: t.lines, language: controller.language)
     }
 
     /// 複製會議記錄 Markdown ⌘⇧C。

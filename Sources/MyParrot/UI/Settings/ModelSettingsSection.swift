@@ -43,6 +43,7 @@ final class ModelSelectionFlow {
     /// 直接寫入(不問):設定頁「不用問」的情況與 DebugControl `model set` 共用。
     static func apply(_ backendID: String, for cap: ModelCapability, controller: RecordingController, ui: AppUIState?) {
         ModelBackendRegistry.select(backendID, for: cap)
+        if cap == .translation { ui?.notes?.translation.refreshProvider() }   // #2612
         if cap == .correction {
             let resolved = CorrectionBackend(rawValue: ModelBackendRegistry.selected(for: .correction).id) ?? .off
             if controller.correctionBackend != resolved { controller.correctionBackend = resolved }
@@ -57,6 +58,16 @@ final class ModelSelectionFlow {
             return L("開啟後,按「檢查逐字稿」會把逐字稿文字交給這台電腦上的 Claude Code 送到 Anthropic,用你自己的訂閱額度;不送音訊、檔名與會議名稱。")
         case (ModelBackendRegistry.claudeCLI.id, .minutes):
             return L("開啟後,每次更新會議記錄都會把逐字稿與筆記全文交給這台電腦上的 Claude Code 送到 Anthropic,用你自己的訂閱額度;不送音訊與檔名。")
+        // #2418 CDX-06:Codex 送出的內容與 Claude 一字不差,只有送達處與額度不同。
+        case (ModelBackendRegistry.codexCLI.id, .correction):
+            return L("開啟後,按「檢查逐字稿」會把逐字稿文字交給這台電腦上的 Codex CLI 送到 OpenAI,用你自己的 ChatGPT 訂閱額度;不送音訊、檔名與會議名稱。")
+        case (ModelBackendRegistry.codexCLI.id, .minutes):
+            return L("開啟後,每次更新會議記錄都會把逐字稿與筆記全文交給這台電腦上的 Codex CLI 送到 OpenAI,用你自己的 ChatGPT 訂閱額度;不送音訊與檔名。")
+        // #2612 TRL-06
+        case (ModelBackendRegistry.claudeCLI.id, .translation):
+            return L("開啟後,每批會把自上次之後新定稿行的文字交給這台電腦上的 Claude Code 送到 Anthropic,用你自己的訂閱額度;不送講者、時間、音訊與檔名。")
+        case (ModelBackendRegistry.codexCLI.id, .translation):
+            return L("開啟後,每批會把自上次之後新定稿行的文字交給這台電腦上的 Codex CLI 送到 OpenAI,用你自己的 ChatGPT 訂閱額度;不送講者、時間、音訊與檔名。")
         default:
             return L("開啟後,資料會送出這台電腦,交給所選的後端處理。")
         }
@@ -64,15 +75,29 @@ final class ModelSelectionFlow {
 
     /// B3(MIN-07):確認框以**後端**為單位,一次列出這個後端每個能力各送什麼;同一後端只問一次。
     static func privacyPromptTitle(backendID: String) -> String {
-        backendID == ModelBackendRegistry.claudeCLI.id ? L("開啟 Claude CLI(本機)") : L("要開啟這個後端嗎?")
+        switch backendID {
+        case ModelBackendRegistry.claudeCLI.id: return L("開啟 Claude CLI(本機)")
+        case ModelBackendRegistry.codexCLI.id: return L("開啟 Codex CLI(本機)")     // #2418 CDX-06
+        default: return L("要開啟這個後端嗎?")
+        }
     }
 
+    /// 第一句依後端(送到哪、花誰的額度);「各功能送出的內容」兩段與「一律不送」句所有 CLI 後端共用(CDX-06)。
     static func privacyPromptText(backendID: String) -> String {
-        guard backendID == ModelBackendRegistry.claudeCLI.id else { return L("開啟後,資料會送出這台電腦,交給所選的後端處理。") }
+        let lead: String
+        switch backendID {
+        case ModelBackendRegistry.claudeCLI.id:
+            lead = L("這個後端會把文字交給這台電腦上的 Claude Code,再送到 Anthropic,用你自己的訂閱額度。各功能送出的內容:")
+        case ModelBackendRegistry.codexCLI.id:
+            lead = L("這個後端會把文字交給這台電腦上的 Codex CLI,再送到 OpenAI,用你自己的 ChatGPT 訂閱額度。各功能送出的內容:")
+        default:
+            return L("開啟後,資料會送出這台電腦,交給所選的後端處理。")
+        }
         // 四句分開翻(check-translations 的兩個掃描器對 \n 轉義處理不一致,key 不放換行)。
-        return [L("這個後端會把文字交給這台電腦上的 Claude Code,再送到 Anthropic,用你自己的訂閱額度。各功能送出的內容:"),
+        return [lead,
                 L("• 逐字稿校正:按「檢查逐字稿」時,該批逐字稿的段號與文字。"),
                 L("• 會議記錄:每次更新時,上一版會議記錄、自上次之後的逐字稿(含「你／對方」標籤與時間)、筆記全文(含你寫的標題)。"),
+                L("• 逐字稿翻譯:每批送出自上次之後新定稿行的文字與目標語言。"),
                 L("一律不送:音訊、檔名、路徑、錄音日期與裝置名稱。")].joined(separator: "\n")
     }
 }
@@ -106,10 +131,13 @@ struct ModelSettingsSection: View {
     @Bindable var controller: RecordingController
     @Bindable var uiState: AppUIState
     @State private var cliState: CLIState = .unknown
+    /// #2418 CDX-03:Codex CLI 狀態(找不到／未登入／就緒),與 Claude 的分開顯示。
+    @State private var codexState: CLIState = .unknown
     /// #2438 Phase 3a:Apple 本機模型可用性(設定頁開啟時再探一次)。
     @State private var afm = AppleFMAvailability.shared
     /// 只為了讓畫面跟著偏好變(DebugControl `model set`／其他寫入);值仍經登錄表解析(`selected(for:)`)。
     @AppStorage("model.minutes") private var minutesRaw = ModelBackendRegistry.offID
+    @AppStorage("model.translation") private var translationRaw = ModelBackendRegistry.offID   // #2612
     /// 會議記錄 session 不存在時的後備(讀寫同兩把偏好鍵,預設與 `MinutesController` 一致)。
     @AppStorage("minutes.auto") private var autoPref = true
     @AppStorage("minutes.cadence") private var cadencePref = 5
@@ -125,6 +153,10 @@ struct ModelSettingsSection: View {
         Section {
             capabilityRow(.correction, title: L("逐字稿校正"))
             capabilityRow(.minutes, title: L("會議記錄"))
+            capabilityRow(.translation, title: L("逐字稿翻譯"))   // #2612 TRL-01
+            if selectedID(.translation) != ModelBackendRegistry.offID, let tr = uiState.notes?.translation {
+                translationExtras(tr)
+            }
             if usesClaudeCLI {
                 HStack(spacing: MP.spS) {
                     Image(systemName: cliState == .ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -134,6 +166,18 @@ struct ModelSettingsSection: View {
                 // grouped Form 的原生排法:標籤在左、欄位在右,提示字當 placeholder。
                 TextField(text: $controller.correctionModel, prompt: Text(L("選填,留空跟 CLI 預設走"))) {
                     Text(L("Claude CLI 模型檔位（校正與會議記錄共用）"))
+                }
+                .font(MPFont.caption)
+            }
+            // #2418 CDX-03／08:有能力選了 Codex CLI ⇒ 顯示它的狀態與自己的檔位欄(與 Claude 的欄位分開,兩家檔名不同)。
+            if usesCodexCLI {
+                HStack(spacing: MP.spS) {
+                    Image(systemName: codexState == .ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(codexState == .ready ? .green : .orange)
+                    Text(codexStatusText).font(MPFont.caption).foregroundStyle(codexState == .ready ? Color.secondary : Color.orange)
+                }
+                TextField(text: $controller.codexModel, prompt: Text(L("選填,留空跟 CLI 預設走"))) {
+                    Text(L("Codex CLI 模型檔位（校正與會議記錄共用）"))
                 }
                 .font(MPFont.caption)
             }
@@ -149,11 +193,14 @@ struct ModelSettingsSection: View {
         } header: { Text(L("模型")) }
         footer: {
             Text(L("每個功能各自選後端;預設全部關閉,沒選後端的功能不會出現。") +
-                 (afm.isPlatformSupported ? "\n" + L("Apple 本機模型:資料不出機") : ""))
+                 (afm.isPlatformSupported ? "\n" + L("Apple 本機模型:資料不出機") : "") +
+                 (usesCodexCLI ? "\n" + L("Codex CLI:文字會送到 OpenAI") : "") +
+                 (usesAppleTranslation ? "\n" + L("Apple 翻譯:資料不出機") : ""))
                 .font(MPFont.caption).foregroundStyle(.tertiary).lineSpacing(3)
         }
-        .onAppear { refreshCLIState(); afm.refresh() }
+        .onAppear { refreshCLIState(); refreshCodexState(); afm.refresh(); uiState.notes?.translation.reprobeAvailability() }
         .onChange(of: usesClaudeCLI) { _, _ in refreshCLIState() }
+        .onChange(of: usesCodexCLI) { _, _ in refreshCodexState() }
         // 隱私確認框掛在設定頁根節點(`ModelPrivacyPrompt`),不掛在這個 Section:grouped Form 的列可能延遲載入,
         // 捲出畫面時 Section 的 alert／onDisappear 不可靠。
 
@@ -211,12 +258,68 @@ struct ModelSettingsSection: View {
             _ = minutesRaw   // 建立對偏好的觀察
             return ModelBackendRegistry.selected(for: .minutes).id
         case .translation:
+            _ = translationRaw   // 建立對偏好的觀察
             return ModelBackendRegistry.selected(for: .translation).id
+        }
+    }
+
+    private var usesAppleTranslation: Bool { selectedID(.translation) == ModelBackendRegistry.appleTranslation.id }
+
+    // MARK: #2612 TRL-01／03 翻譯附加列:目標語言、CLI 送出節奏(＋Codex 30 秒警語)、Apple 語言包狀態
+
+    @ViewBuilder
+    private func translationExtras(_ tr: TranslationController) -> some View {
+        Picker(L("目標語言"), selection: Binding(get: { tr.target }, set: { tr.target = $0 })) {
+            ForEach(TranslationTarget.allCases, id: \.self) { Text(L($0.label)).tag($0) }
+        }
+        if tr.isCLI {
+            Picker(L("送出節奏"), selection: Binding(get: { tr.cadenceSeconds }, set: { tr.cadenceSeconds = $0 })) {
+                ForEach(TranslationPlan.cadenceOptions, id: \.self) { Text(Self.cadenceLabel($0)).tag($0) }
+            }
+            if tr.backendID == ModelBackendRegistry.codexCLI.id, tr.cadenceSeconds <= TranslationPlan.codexWarnCadence {
+                let est = TranslationPlan.estimatedTokensPerHour(cadenceSec: tr.cadenceSeconds, basePerCall: 13_500) / 10_000
+                Text(Lf("每小時約 %@ 萬 tokens(Codex 每批固定背 13.5k)", ["\(est)"])).font(MPFont.caption).foregroundStyle(.orange)
+            }
+            if let reason = tr.unavailableReason {
+                Text(reason).font(MPFont.caption).foregroundStyle(.orange)
+            }
+        }
+        if tr.isApple {
+            HStack(spacing: MP.spS) {
+                switch tr.effectiveAvailability {
+                case .installed:
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text(L("語言包已安裝")).font(MPFont.caption).foregroundStyle(.secondary)
+                case .supported:
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(L("需下載語言包")).font(MPFont.caption).foregroundStyle(.orange)
+                    Button(L("下載語言包")) { tr.wantsLanguageDownload = true }.controlSize(.small)
+                case .unsupported:
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                    Text(tr.sourceSameAsTarget ? L("辨識語言與目標語言相同,沒有東西可翻") : L("此語言組合不支援")).font(MPFont.caption).foregroundStyle(.orange)
+                case .unknown, .notApplicable:
+                    ProgressView().controlSize(.small)
+                    Text(L("檢查語言包中…")).font(MPFont.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    static func cadenceLabel(_ sec: Int) -> String {
+        switch sec {
+        case 30: return L("30 秒")
+        case 60: return L("1 分鐘")
+        case 120: return L("2 分鐘")
+        default: return L("5 分鐘")
         }
     }
 
     private var usesClaudeCLI: Bool {
         [ModelCapability.correction, .minutes].contains { selectedID($0) == ModelBackendRegistry.claudeCLI.id }
+    }
+
+    private var usesCodexCLI: Bool {
+        [ModelCapability.correction, .minutes].contains { selectedID($0) == ModelBackendRegistry.codexCLI.id }
     }
 
     private var usesAppleFM: Bool {
@@ -266,6 +369,26 @@ struct ModelSettingsSection: View {
         Task {
             guard let exe = ClaudeCLIProvider.locate() else { cliState = .missing; return }
             cliState = await ClaudeCLIProvider.isLoggedIn(executable: exe) ? .ready : .notLoggedIn
+        }
+    }
+
+    // MARK: Codex CLI 狀態(#2418 CDX-03)
+
+    private var codexStatusText: String {
+        switch codexState {
+        case .unknown: return L("檢查中…")
+        case .missing: return L("找不到 codex 指令,請先安裝 Codex CLI")
+        case .notLoggedIn: return L("Codex CLI 尚未登入,請在終端機執行 codex login")
+        case .ready: return L("已找到 Codex CLI,已登入")
+        }
+    }
+
+    private func refreshCodexState() {
+        guard usesCodexCLI else { return }
+        codexState = .unknown
+        Task {
+            guard let exe = CodexCLIProvider.locate() else { codexState = .missing; return }
+            codexState = await CodexCLIProvider.isLoggedIn(executable: exe) ? .ready : .notLoggedIn
         }
     }
 }

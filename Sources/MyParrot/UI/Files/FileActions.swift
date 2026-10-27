@@ -13,6 +13,51 @@ enum FileActions {
         controller.isFileActionLocked(rec)
     }
 
+    /// #2612 TRL-09:翻譯整份——先把筆記／會議記錄／翻譯切到那場、把 .srt 讀回畫面,再排整份佇列。
+    static func translateWhole(_ rec: Recording, controller: RecordingController, session: NotesSession?) {
+        guard let s = session, s.show(recording: rec.url) else { return }
+        if rec.hasTranscript { _ = controller.loadTranscript(for: rec) }
+        s.translation.sync(transcript: controller.liveTranscript, language: controller.language, enqueue: false)
+        s.translateWholeNow(controller: controller)
+    }
+
+    /// #2623 TOK-03:右鍵「模型用量…」——能力 × 後端分列＋全場合計;「打開 tokens.json」看原檔。
+    static func showTokenUsage(_ rec: Recording) {
+        let stem = SidecarSet.stem(of: rec.url)
+        let entries = TokenLedger.load(stem: stem)
+        let t = TokenLedger.totals(entries)
+        let alert = NSAlert()
+        alert.messageText = "\(SidecarSet.splitName(stem.lastPathComponent).title) · \(L("模型用量"))"
+        if entries.isEmpty {
+            alert.informativeText = L("這場還沒有模型用量")
+        } else {
+            var lines: [String] = []
+            for cap in ModelCapability.allCases {
+                guard let backends = t.byFeatureBackend[cap.rawValue] else { continue }
+                for (backend, s) in backends.sorted(by: { $0.key < $1.key }) {
+                    let label = ModelBackendRegistry.all.first { $0.id == backend }.map { L($0.label) } ?? backend
+                    lines.append("\(featureLabel(cap)) · \(label):" + Lf("進 %@／出 %@／%@ 次", [fmt(s.inputTokens, s.estimated), fmt(s.outputTokens, s.estimated), "\(s.calls)"]))
+                }
+            }
+            lines.append(L("全場合計") + ":" + Lf("進 %@／出 %@／%@ 次", [fmt(t.all.inputTokens, t.all.estimated), fmt(t.all.outputTokens, t.all.estimated), "\(t.all.calls)"]))
+            alert.informativeText = lines.joined(separator: "\n")
+        }
+        alert.addButton(withTitle: L("好"))
+        let open = alert.addButton(withTitle: L("打開 tokens.json"))
+        open.isEnabled = !entries.isEmpty
+        if alert.runModal() == .alertSecondButtonReturn { NSWorkspace.shared.open(TokenLedger.url(stem: stem)) }
+    }
+
+    private static func fmt(_ n: Int, _ estimated: Bool) -> String { (estimated ? "≈" : "") + n.formatted() }
+
+    static func featureLabel(_ cap: ModelCapability) -> String {
+        switch cap {
+        case .correction: return L("校正")
+        case .minutes: return L("記錄")
+        case .translation: return L("翻譯")
+        }
+    }
+
     static func rename(_ rec: Recording, controller: RecordingController, session: NotesSession?) {
         let name = rec.url.deletingPathExtension().lastPathComponent
         let split = SidecarSet.splitName(name)
@@ -92,6 +137,7 @@ struct SidecarChips: View {
             chip(L("逐字稿"), on: has.contains("txt") || has.contains("srt"), color: MP.blue)
             chip(L("筆記"), on: has.contains("notes.md"), color: MP.coral)
             chip(L("記錄"), on: has.contains("minutes.md"), color: .green)
+            chip(L("用量"), on: has.contains("tokens.json"), color: .purple)   // #2623 TOK-03
         }
     }
 
