@@ -426,7 +426,7 @@ final class Localizer {
         "Whisper(高精度·本機)": [.en: "Whisper (high accuracy · on-device)", .ja: "Whisper(高精度・端末内)", .ko: "Whisper(고정밀 · 온디바이스)", .zhCN: "Whisper(高精度·本机)"],
         "雲端(自帶 API)": [.en: "Cloud (your own API key)", .ja: "クラウド(自分の API)", .ko: "클라우드(자체 API)", .zhCN: "云端(自带 API)"],
         "large-v3-turbo(建議·1.6GB·快)": [.en: "large-v3-turbo (recommended · 1.6GB · fast)", .ja: "large-v3-turbo(推奨・1.6GB・高速)", .ko: "large-v3-turbo(권장 · 1.6GB · 빠름)", .zhCN: "large-v3-turbo(建议·1.6GB·快)"],
-        "large-v3-q5_0(高精度·2.3GB)": [.en: "large-v3-q5_0 (high accuracy · 2.3GB)", .ja: "large-v3-q5_0(高精度・2.3GB)", .ko: "large-v3-q5_0(고정밀 · 2.3GB)", .zhCN: "large-v3-q5_0(高精度·2.3GB)"],
+        "large-v3-q5_0(高精度·1.1GB)": [.en: "large-v3-q5_0 (high accuracy · 1.1GB)", .ja: "large-v3-q5_0(高精度・1.1GB)", .ko: "large-v3-q5_0(고정밀 · 1.1GB)", .zhCN: "large-v3-q5_0(高精度·1.1GB)"],
         "large-v3(最高精度·3.1GB)": [.en: "large-v3 (highest accuracy · 3.1GB)", .ja: "large-v3(最高精度・3.1GB)", .ko: "large-v3(최고 정밀 · 3.1GB)", .zhCN: "large-v3(最高精度·3.1GB)"],
         // QUIT-12/13(#1697):轉稿中退出的確認框與「上次未完成」標記
         // (zh-lint-skip:.ja/.zhCN 欄為刻意的日文/簡體譯文,比照既有翻譯表慣例)

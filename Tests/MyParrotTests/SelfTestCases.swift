@@ -54,6 +54,7 @@ struct SelfTestCases {
     @Test("TRL-05 翻譯提示詞與解析(兩家)") func translationPromptAndParse() { check(SelfTest.translationPromptAndParse()) }
     @Test("TRL-08 譯文檔對齊") func translationSRT() { check(SelfTest.translationSRT()) }
     @Test("TOK-01 每場模型用量帳本(append/load/totals/壞檔/format)") func tokenLedger() { check(SelfTest.tokenLedger()) }
+    @Test("CLT-01 Whisper 模型大小檢查單位(三個 HF 位元數＋正控＋邊界)") func whisperModelSize() { check(SelfTest.whisperModelSize()) }
     @Test("AUD-35 tap 排除自己的行程(純決策)") func tapExcludesSelf() { check(SelfTest.tapExcludesSelf()) }
     @Test("DBG-01 控制通道指令切分與結果檔路徑") func debugCommandParsing() { check(SelfTest.debugCommandParsing()) }
     @Test("UPD-01 版號解析/比較(v 前綴/補 0/非數字段)") func updateVersionCompare() { check(SelfTest.caseUpdateVersionCompare()) }

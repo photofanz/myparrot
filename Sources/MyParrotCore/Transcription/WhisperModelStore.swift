@@ -8,6 +8,8 @@ public struct WhisperModel: Identifiable, Hashable, Sendable {
     public let display: String
     public let fileName: String
     public let downloadURL: URL?
+    /// 十進位 MB(10^6,跟 HuggingFace 顯示同單位);值釘在上游 blob 位元數(SelfTest `whisperUpstreamBytes`)。
+    /// BUG-39:曾是 MB 常數配 MiB 比較,q5_0 常數又抄錯(2264),永遠裝不起來。
     public let approxMB: Int
 
     // l10n-keys:begin(BUG-28:display 會顯示在設定頁,括號內說明要跟介面語言)
@@ -16,12 +18,12 @@ public struct WhisperModel: Identifiable, Hashable, Sendable {
                      display: "large-v3-turbo(建議·1.6GB·快)",
                      fileName: "ggml-large-v3-turbo.bin",
                      downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"),
-                     approxMB: 1624),
+                     approxMB: 1625),
         WhisperModel(id: "large-v3-q5_0",
-                     display: "large-v3-q5_0(高精度·2.3GB)",
+                     display: "large-v3-q5_0(高精度·1.1GB)",
                      fileName: "ggml-large-v3-q5_0.bin",
                      downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin"),
-                     approxMB: 2264),
+                     approxMB: 1081),
         WhisperModel(id: "large-v3",
                      display: "large-v3(最高精度·3.1GB)",
                      fileName: "ggml-large-v3.bin",
@@ -60,11 +62,13 @@ public enum WhisperModelStore {
     }
 
     /// 輕量完整性:存在 + 大小落在期望值 ±10%(TR-16;不做逐位 hash,3GB 檔太慢)。
+    /// 單位＝十進位 MB,與 `approxMB` 同單位(BUG-39／CLT-01:之前除 1,048,576 算 MiB,q5_0 必落在窗外);
+    /// 用位元數比,不先截成整數 MB(二審:兩邊截斷會讓窗偏掉 1 MB)。只是大小檢查,不是完整性驗證(不驗 hash)。
     static func isValid(_ url: URL, approxMB: Int) -> Bool {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? Int else { return false }
-        let mb = size / 1_048_576
-        return mb > approxMB * 9 / 10 && mb < approxMB * 11 / 10
+              let size = (attrs[.size] as? NSNumber)?.int64Value else { return false }
+        let expected = Int64(approxMB) * 1_000_000
+        return size > expected * 9 / 10 && size < expected * 11 / 10
     }
 
     /// 下載模型(進度 0...1)。失敗丟錯;成功回傳落地 URL。

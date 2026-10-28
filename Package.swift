@@ -1,5 +1,13 @@
 // swift-tools-version: 6.0
 import PackageDescription
+import Foundation
+
+// BUG-40／CLT-05(公開倉 issue #2):Command Line Tools 的 SDK 有 FoundationModels.framework(`canImport` 為真),
+// 但 `@Generable` 的 macro plugin(libFoundationModelsMacros.dylib)只隨 Xcode.app 出貨 ⇒ CLT-only 機器 build 必死。
+// SwiftPM manifest 跑在沙箱裡查不到工具鏈有沒有 plugin,所以用明示旗標:`MYPARROT_NO_AFM=1 swift build`
+// ⇒ 所有目標多一個 `MYPARROT_NO_AFM` 編譯條件,Apple 本機模型後端整段不編、登錄表不列(設定頁自然不出現)。
+let noAFM = ProcessInfo.processInfo.environment["MYPARROT_NO_AFM"] == "1"
+let afmSettings: [SwiftSetting] = noAFM ? [.define("MYPARROT_NO_AFM")] : []
 
 let package = Package(
     name: "MyParrot",
@@ -33,17 +41,20 @@ let package = Package(
                 "MyParrotObjC",
                 .product(name: "OpenCC", package: "SwiftyOpenCC")
             ],
-            path: "Sources/MyParrotCore"
+            path: "Sources/MyParrotCore",
+            swiftSettings: afmSettings
         ),
         .executableTarget(
             name: "MyParrot",
             dependencies: ["MyParrotCore"],
-            path: "Sources/MyParrot"
+            path: "Sources/MyParrot",
+            swiftSettings: afmSettings
         ),
         .executableTarget(
             name: "MyParrotSelfTest",
             dependencies: ["MyParrotCore"],
-            path: "Sources/MyParrotSelfTest"
+            path: "Sources/MyParrotSelfTest",
+            swiftSettings: afmSettings
         ),
         // CLI v1(2026-08-10 計畫,docs/worklogs/2026-08-10-cli-feasibility/)。
         // __info_plist 嵌進執行檔(Phase 6):bare CLI 呼叫 TCC 保護 API(語音辨識/
@@ -57,6 +68,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
             path: "Sources/MyParrotCLI",
+            swiftSettings: afmSettings,
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
@@ -71,7 +83,8 @@ let package = Package(
         .testTarget(
             name: "MyParrotTests",
             dependencies: ["MyParrotCore"],
-            path: "Tests/MyParrotTests"
+            path: "Tests/MyParrotTests",
+            swiftSettings: afmSettings
         )
     ]
 )

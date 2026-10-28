@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !MYPARROT_NO_AFM
 import FoundationModels
 
 /// #2438 Phase 3a(AFM-12):Apple Foundation Models 逐字稿校正後端。提示詞沿 `CorrectionPrompt`(只含段號＋原文),

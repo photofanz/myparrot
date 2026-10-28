@@ -160,7 +160,15 @@ done
 # --- Install to ~/Applications (non-iCloud) so the signature stays valid ------
 # Running from the iCloud project dir lets iCloud re-break the signature; copying
 # to ~/Applications (not synced) keeps it clean and the TCC grant stable.
-DEST_DIR="$HOME/Applications"
+DEST_DIR="${MYPARROT_DEST_DIR:-$HOME/Applications}"   # CLT-06:驗證時可指到別處,不碰現用 app
+case "$DEST_DIR" in
+  /*) ;;                                   # 只收絕對路徑
+  *) echo "MYPARROT_DEST_DIR 必須是絕對路徑:$DEST_DIR"; exit 1 ;;
+esac
+DEST_DIR="${DEST_DIR%/}"
+if [ -z "$DEST_DIR" ] || [ "$DEST_DIR" = "$(pwd)" ] || [ "$DEST_DIR" = "/" ] || [ "$DEST_DIR" = "$HOME" ]; then
+  echo "MYPARROT_DEST_DIR 不可指到 /、家目錄或 repo 根:$DEST_DIR"; exit 1
+fi
 DEST="$DEST_DIR/$APP"
 mkdir -p "$DEST_DIR"
 rm -rf "$DEST"

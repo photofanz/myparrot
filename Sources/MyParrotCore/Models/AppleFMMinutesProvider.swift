@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !MYPARROT_NO_AFM
 import FoundationModels
 
 /// #2438 Phase 3a(AFM-03/04/05):Apple Foundation Models 會議記錄後端。資料全部留在本機。

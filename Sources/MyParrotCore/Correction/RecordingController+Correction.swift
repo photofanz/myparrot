@@ -37,7 +37,7 @@ extension RecordingController {
             guard status == .available else {
                 throw CorrectionError.unavailable(AFMAvailability.messageKey(for: status) ?? "Apple 本機模型目前無法使用")
             }
-            #if canImport(FoundationModels)
+            #if canImport(FoundationModels) && !MYPARROT_NO_AFM
             if #available(macOS 26, *) { return AppleFMCorrectionProvider() }
             #endif
             throw CorrectionError.unavailable(AFMAvailability.messageKey(for: .unsupportedOS) ?? "")

@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !MYPARROT_NO_AFM
 import FoundationModels
 #endif
 
@@ -19,14 +19,18 @@ public enum AFMAvailability {
     /// DEBUG 驗證用覆寫(`myparrotctl afm force`):有值時 `probe()` 直接回它。release 不會被設。
     nonisolated(unsafe) public static var debugOverride: AFMStatus?
 
-    /// 這台 OS 有沒有 FoundationModels(macOS 26+)。
+    /// 這台 OS 有沒有 FoundationModels(macOS 26+);`MYPARROT_NO_AFM` 建置(CLT-05)一律假 ⇒ 登錄表不列 appleFM。
     public static var isPlatformSupported: Bool {
+        #if canImport(FoundationModels) && !MYPARROT_NO_AFM
         if #available(macOS 26, *) { return true } else { return false }
+        #else
+        return false
+        #endif
     }
 
     public static func probe() -> AFMStatus {
         if let o = debugOverride { return o }
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !MYPARROT_NO_AFM
         if #available(macOS 26, *) {
             switch SystemLanguageModel.default.availability {
             case .available: return .available

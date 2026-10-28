@@ -17,6 +17,12 @@
 <img src="docs/img/main-window-dark.png" width="560" alt="Main window (dark) — obsidian controller">
 </p>
 
+## What's new in 0.5.3
+
+- **Fixed: the `large-v3-q5_0` Whisper model could never be installed** — the size check compared decimal-MB constants against MiB, and the q5_0 constant itself was wrong, so every download ended in “size mismatch”. Sizes are now pinned to the upstream byte counts (q5_0 is 1.1 GB, not 2.3). Thanks to noub99 for the report (#1).
+- **Building from source with Command Line Tools only** — `MYPARROT_NO_AFM=1` builds the self-test and the `myparrot` CLI without Xcode (the Apple on-device model backend is left out: its macro plugin ships only inside Xcode.app). The app itself still needs full Xcode (SwiftUI’s `@State` macro plugin). The README used to say Command Line Tools were enough; it was wrong and is fixed (#2).
+- **`scripts/fetch-whisper.sh` no longer needs `xcodebuild`** — Unix Makefiles, arm64 + x86_64 built separately and combined with lipo, the xcframework assembled by hand and self-verified; pinned to whisper.cpp v1.9.5 (`WHISPER_REF=` to override) and fails loudly if the ref cannot be fetched. About 40 s instead of 5–10 min.
+
 ## What's new in 0.5.2
 
 - **Transcript translation** — a “Translate → …” control in the transcript column shows a translation under each finalized line. Three backends: **Apple Translate** (on-device, free, line-by-line in real time, roughly the quality of the system Translate app), or **Claude CLI** / **Codex CLI** (batched, one batch per minute by default, better quality, billed to your own subscription). Translations are saved as `<recording>.zh-Hant.srt`; the original transcript is never touched; right-click an old recording for “Translate Whole Transcript”. Off by default — enable it under Settings → Model → Transcript translation, and set the recognition language to the meeting’s language.
@@ -87,7 +93,7 @@
 ## Requirements
 
 - **macOS 15+** — **macOS 26.1+ recommended**: the SpeechAnalyzer live transcript and the Apple on-device model need macOS 26+, and 26.0 has a known process-tap regression. On macOS 15 the live transcript uses SFSpeechRecognizer or the local Whisper engine
-- **Swift 6 toolchain** — Xcode **Command Line Tools are enough** to build, run, and self-test. Full Xcode is only needed for `swift test`.
+- **Swift 6 toolchain** — building the **app** needs full **Xcode** (SwiftUI's `@State` macro plugin ships only inside Xcode.app). With **Command Line Tools alone** you can still run the self-test and build the `myparrot` CLI: `MYPARROT_NO_AFM=1 swift run MyParrotSelfTest` / `MYPARROT_NO_AFM=1 swift build --product MyParrotCLI` (the flag leaves out the Apple on-device model backend, whose `@Generable` macro plugin is also Xcode-only and `canImport` can't tell). `swift test` needs full Xcode.
 - **cmake** (`brew install cmake`) — one-time only, to build the local Whisper engine from source (see Quick start)
 
 ## Download
@@ -100,7 +106,7 @@ Prefer to build from source? See below.
 
 ```bash
 git clone <this-repo> && cd MyParrot
-bash scripts/fetch-whisper.sh   # one-time: builds the local Whisper engine from source (~5-10 min, needs Xcode + cmake)
+bash scripts/fetch-whisper.sh   # one-time: builds the local Whisper engine from source (~2-5 min, needs cmake; Xcode or Command Line Tools; pinned to whisper.cpp v1.9.5, override with `WHISPER_REF=`)
 swift build                     # compile check
 bash scripts/build-app.sh       # assemble, sign, install to ~/Applications
 open ~/Applications/MyParrot.app
@@ -113,7 +119,7 @@ First launch asks for **Microphone**, **Speech Recognition**, and **System Audio
 1. **Signing & permission persistence.** macOS ties permission grants (TCC) to the signing identity. `build-app.sh` auto-picks the best available: an Apple Development / Developer ID certificate (has a Team ID → **permissions survive rebuilds**) → a self-signed cert → ad-hoc (**permissions re-asked on every rebuild**). If you have any Apple certificate, the script will find and use it.
 2. **Keep the `.app` out of iCloud-synced folders.** iCloud Drive re-applies Finder xattrs that repeatedly break code signatures. This is why the script installs to `~/Applications`.
 3. **Bluetooth mics work, but they are phone quality — for both sides.** The moment any app opens a Bluetooth microphone, the whole link drops from A2DP to narrowband HFP, so the *other side's* audio degrades too. Prefer the built-in or a wired/USB mic and wear the headset for listening (auto-selection already avoids Bluetooth mics). If you do switch to one mid-recording (0.5.1+), expect a 5–6 s "switching…" spinner while the headset enters call mode; if it disconnects, the app falls back to the built-in mic within about a second.
-4. **First `swift build` fails right after clone?** Run `bash scripts/fetch-whisper.sh` first. The Whisper engine binary (~35MB) isn't checked into git — the script builds it from source once (needs Xcode + `cmake`).
+4. **First `swift build` fails right after clone?** Run `bash scripts/fetch-whisper.sh` first. The Whisper engine binary (~35MB) isn't checked into git — the script builds it from source once (needs `cmake`; Xcode or Command Line Tools both work). On a Command Line Tools-only Mac only the self-test and the CLI build (`MYPARROT_NO_AFM=1`, see Requirements); the app itself needs Xcode.
 
 ## `myparrot` CLI (since 0.3.0)
 
@@ -177,7 +183,7 @@ Sources/MyParrotCore/        Library: capture, mux, transcription, export
   SelfTest*.swift            Self-test cases (shared by CLI runner & swift test)
 Sources/MyParrotObjC/        ObjC @try/@catch bridge — AVFoundation assertions become Swift errors, not aborts
 Sources/MyParrot/            SwiftUI app (main window, mini mode, settings, mascot)
-Sources/MyParrotSelfTest/    CLI test runner — works with Command Line Tools only
+Sources/MyParrotSelfTest/    CLI test runner — works with Command Line Tools only (MYPARROT_NO_AFM=1)
 Tests/MyParrotTests/         Swift Testing wrappers (one @Test per self-test case)
 scripts/build-app.sh         Assemble + sign + install + build stamp
 ```

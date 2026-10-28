@@ -57,6 +57,7 @@ public enum SelfTest {
             translationPromptAndParse(),
             translationSRT(),
             tokenLedger(),   // #2623 TOK-01
+            whisperModelSize(),   // BUG-39 CLT-01(案例在 SelfTest+WhisperModel.swift)
             tapExcludesSelf(),
             debugCommandParsing(),
             caseUpdateVersionCompare(),

@@ -110,7 +110,7 @@ final class MinutesController {
             // #2438 Phase 3a(AFM-01/06):每次都重探;不可用 ⇒ 選擇保留、講原因、不建 provider。
             let afm = AppleFMAvailability.shared
             afm.refresh()
-            #if canImport(FoundationModels)
+            #if canImport(FoundationModels) && !MYPARROT_NO_AFM
             if afm.isAvailable, #available(macOS 26, *) { provider = AppleFMMinutesProvider(); return }
             #endif
             provider = nil

@@ -17,6 +17,12 @@
 <img src="docs/img/main-window-dark.png" width="560" alt="主視窗(深色)— 黑曜石遙控器">
 </p>
 
+## 0.5.3 新東西
+
+- **修正:Whisper `large-v3-q5_0` 模型永遠裝不起來**:大小檢查拿十進位 MB 的常數去比 MiB,q5_0 的常數本身又抄錯,下載完一定被判「大小異常」丟掉。現在三個模型的大小釘在上游實際位元數(q5_0 是 1.1 GB,不是 2.3)。感謝 noub99 回報(#1)。
+- **只裝 Command Line Tools 也能從原始碼建自測與 CLI**:`MYPARROT_NO_AFM=1` 不帶 Apple 本機模型後端(它的 macro plugin 只隨 Xcode.app 出貨)。App 本身仍要完整 Xcode(SwiftUI `@State` 的 macro plugin 同樣只在 Xcode)。README 原本寫「Command Line Tools 就夠」是錯的,已改口(#2)。
+- **`scripts/fetch-whisper.sh` 不再需要 `xcodebuild`**:Unix Makefiles、arm64 與 x86_64 各建再 lipo、xcframework 手組並自驗;釘 whisper.cpp v1.9.5(`WHISPER_REF=` 可換),抓不到指定版本就直接失敗。約 40 秒,不再 5 到 10 分鐘。
+
 ## 0.5.2 新東西
 
 - **逐字稿翻譯**:逐字稿欄多一顆「譯 → 繁中」,每句定稿後譯文就並列在原文下方。後端三選一——**Apple 翻譯**(本機、免費、逐行即時,品質是系統翻譯等級)、**Claude CLI**／**Codex CLI**(批次送出,預設每 1 分鐘一批,品質較好,吃你自己的訂閱額度)。譯文另存 `<錄音>.zh-Hant.srt`,原稿不動;舊錄音右鍵「翻譯整份」。預設關,到 設定 → 模型 → 逐字稿翻譯 開啟;辨識語言要設成會議的語言。
@@ -87,7 +93,7 @@
 ## 需求
 
 - **macOS 15+**——**建議 26.1+**:SpeechAnalyzer 即時逐字稿與 Apple 本機模型需 macOS 26+,且 26.0 有已知 process-tap regression;macOS 15 的即時逐字稿走 SFSpeechRecognizer 或本機 Whisper
-- **Swift 6 工具鏈** — **Command Line Tools 就夠** build、跑、自測;只有 `swift test` 需要完整 Xcode
+- **Swift 6 工具鏈** — 建 **app** 需要完整 **Xcode**(SwiftUI 的 `@State` macro plugin 只隨 Xcode.app 出貨)。**只有 Command Line Tools** 仍可跑自測、建 `myparrot` CLI:`MYPARROT_NO_AFM=1 swift run MyParrotSelfTest`／`MYPARROT_NO_AFM=1 swift build --product MyParrotCLI`(旗標把 Apple 本機模型後端留在外面:它的 `@Generable` macro plugin 一樣只在 Xcode 裡,`canImport` 分不出來);`swift test` 需要完整 Xcode
 - **cmake**(`brew install cmake`)——一次性,只為了從原始碼建置本機 Whisper 引擎(見下方快速開始)
 
 ## 下載
@@ -100,7 +106,7 @@
 
 ```bash
 git clone <this-repo> && cd MyParrot
-bash scripts/fetch-whisper.sh   # 一次性:從原始碼建置本機 Whisper 引擎(~5-10 分鐘,需 Xcode + cmake)
+bash scripts/fetch-whisper.sh   # 一次性:從原始碼建置本機 Whisper 引擎(~2-5 分鐘,需 cmake;Xcode 或 Command Line Tools 皆可;釘 whisper.cpp v1.9.5,要換用 `WHISPER_REF=`)
 swift build                     # 編譯驗證
 bash scripts/build-app.sh       # 組裝、簽章、裝到 ~/Applications
 open ~/Applications/MyParrot.app
@@ -113,7 +119,7 @@ open ~/Applications/MyParrot.app
 1. **簽章與權限記憶。** macOS 的權限(TCC)綁簽章身份。`build-app.sh` 自動選最好的:Apple Development / Developer ID 憑證(有 Team ID → **重 build 權限不重問**)→ 自簽 → ad-hoc(**每次重 build 都重問**)。只要鑰匙圈裡有 Apple 憑證,腳本會自己找到。
 2. **`.app` 別放 iCloud 同步目錄。** iCloud Drive 會反覆重貼 Finder xattr、弄壞簽章——所以腳本裝到 `~/Applications`。
 3. **藍牙麥可以用,但雙向都是電話音質。** 任何 app 一開藍牙麥,整條藍牙鏈路就從 A2DP 掉到窄頻 HFP——**連對方的聲音都跟著變電話音質**。建議講話用內建/有線/USB 麥,耳機拿來聽(自動選麥已避開藍牙)。錄音中真要切到藍牙麥(0.5.1 起),藥丸會轉 5～6 秒「切換中…」等耳機進通話模式;耳機斷線會在約 1 秒內退回內建麥。
-4. **clone 後第一次 `swift build` 就失敗?** 先跑 `bash scripts/fetch-whisper.sh`。Whisper 引擎的二進位(~35MB)沒進 git——這支腳本第一次會從原始碼建置(需要 Xcode + `cmake`)。
+4. **clone 後第一次 `swift build` 就失敗?** 先跑 `bash scripts/fetch-whisper.sh`。Whisper 引擎的二進位(~35MB)沒進 git——這支腳本第一次會從原始碼建置(需要 `cmake`,Xcode 或 Command Line Tools 皆可)。只有 Command Line Tools 的機器只能建自測與 CLI(`MYPARROT_NO_AFM=1`,見「需求」),app 本身要 Xcode。
 
 ## `myparrot` 命令列工具(0.3.0 起)
 
